@@ -14,20 +14,38 @@ benchmark systems.
 
 | Skill | Description |
 |---|---|
-| [`kandy`](kandy/SKILL.md) | System identification / equation discovery with KANDy: lift selection, training, symbolic extraction, FV numerics, and 18 example scripts |
+| [`kandy`](skills/kandy/SKILL.md) | System identification / equation discovery with KANDy: lift selection, training, symbolic extraction, FV numerics, and example scripts |
 
 ## Installation
 
-Copy the skill directory into your project's or user's skills folder:
+### As a plugin (recommended)
+
+This repo is a Claude Code plugin and its own marketplace. In Claude Code:
+
+```
+/plugin marketplace add Center-For-Complex-Systems-Science/kandy-skills
+/plugin install kandy@kandy-skills
+```
+
+Or from the terminal:
+
+```bash
+claude plugin marketplace add Center-For-Complex-Systems-Science/kandy-skills
+claude plugin install kandy@kandy-skills
+```
+
+### Manual copy
+
+Alternatively, copy the skill directory into a skills folder:
 
 ```bash
 # Project-level (shared with collaborators via git)
 mkdir -p .claude/skills
-cp -r kandy .claude/skills/
+cp -r skills/kandy .claude/skills/
 
 # Or user-level (available in all your projects)
 mkdir -p ~/.claude/skills
-cp -r kandy ~/.claude/skills/
+cp -r skills/kandy ~/.claude/skills/
 ```
 
 Claude Code discovers the skill automatically from its `SKILL.md` frontmatter
@@ -36,7 +54,10 @@ and loads the reference docs and examples on demand.
 ## Layout
 
 ```
-kandy/
+.claude-plugin/
+├── plugin.json           # Claude Code plugin manifest
+└── marketplace.json      # lets the repo be added as a plugin marketplace
+skills/kandy/
 ├── SKILL.md              # entry point: core workflow + when to use what
 ├── references/
 │   ├── lifts.md          # Koopman lift selection guide

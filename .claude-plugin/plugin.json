@@ -1,0 +1,23 @@
+{
+  "name": "kandy",
+  "displayName": "KANDy",
+  "version": "0.1.0",
+  "description": "System identification and equation discovery with KANDy (Kolmogorov-Arnold Networks for Dynamics): Koopman lift selection, KAN training, symbolic extraction, and finite-volume PDE data generation, with runnable benchmark examples.",
+  "author": {
+    "name": "Center for Complex Systems Science",
+    "url": "https://github.com/Center-For-Complex-Systems-Science"
+  },
+  "repository": "https://github.com/Center-For-Complex-Systems-Science/kandy-skills",
+  "license": "MIT",
+  "keywords": [
+    "kandy",
+    "kolmogorov-arnold-networks",
+    "system-identification",
+    "equation-discovery",
+    "dynamical-systems",
+    "koopman",
+    "sindy",
+    "symbolic-regression",
+    "scientific-computing"
+  ]
+}

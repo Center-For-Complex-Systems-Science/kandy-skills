@@ -1,0 +1,16 @@
+{
+  "name": "kandy-skills",
+  "owner": {
+    "name": "Center for Complex Systems Science"
+  },
+  "description": "Claude Code skills for the KANDy dynamical-systems discovery library",
+  "plugins": [
+    {
+      "name": "kandy",
+      "source": "./",
+      "description": "System identification and equation discovery with KANDy: lifts, training, symbolic extraction, FV numerics, and benchmark examples",
+      "category": "scientific-computing",
+      "license": "MIT"
+    }
+  ]
+}
