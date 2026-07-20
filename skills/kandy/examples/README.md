@@ -76,10 +76,3 @@ finite-volume solvers.
 | `hopf_example.py` | Hopf fibration S³ → S² | Engineered lift for a map between manifolds |
 | `trefoil_knot_example.py` | Trefoil knot via Hopf fibration | Knotted trajectory recovery |
 | `trefoil_knot_hero.py` | Trefoil hero figure | Publication figure generation |
-
-## `baselines/` — comparison methods
-
-| Script | System | Highlights |
-|---|---|---|
-| `sindy_baselines.py` | SINDy comparison | Baseline for benchmark tables |
-| `pdefind_baseline.py` | PDE-FIND comparison | Baseline on Burgers with Fourier ICs |

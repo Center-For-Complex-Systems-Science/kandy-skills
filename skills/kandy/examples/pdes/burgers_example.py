@@ -182,7 +182,7 @@ def ssp_rk3_step(u, h, rhs_fn):
 
 def rollout_burgers(model_fn, u0: np.ndarray, n_steps: int, dt: float,
                     cfl: float = 0.35) -> np.ndarray:
-    """SSP-RK3 rollout with CFL-adaptive substeps (same as baselines)."""
+    """SSP-RK3 rollout with CFL-adaptive substeps."""
     u = u0[np.newaxis, :].copy()
     traj = [u0.copy()]
     for _ in range(n_steps - 1):

@@ -114,7 +114,6 @@ category matching the data type, then the script closest to the target system:
 | `mathbio/` | Holling Type II | `holling_type_ii_example.py` | 21D physics library, Adam |
 | `geometry/` | Hopf fibration | `hopf_example.py` | Map S³ → S², engineered lift |
 | `geometry/` | Trefoil knot | `trefoil_knot_example.py`, `trefoil_knot_hero.py` | Hopf fibers, figures |
-| `baselines/` | Baselines | `sindy_baselines.py`, `pdefind_baseline.py` | SINDy / PDE-FIND comparison |
 
 ## Full API
 

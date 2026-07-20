@@ -72,8 +72,7 @@ skills/kandy/
     ├── pdes/             # 1D PDEs (Burgers, Kuramoto–Sivashinsky)
     ├── fluids/           # fluid dynamics (3D Navier–Stokes)
     ├── mathbio/          # mathematical biology (predator-prey)
-    ├── geometry/         # engineered lifts on manifolds (Hopf, trefoil)
-    └── baselines/        # SINDy / PDE-FIND comparisons
+    └── geometry/         # engineered lifts on manifolds (Hopf, trefoil)
 ```
 
 ## Requirements

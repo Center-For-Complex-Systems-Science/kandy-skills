@@ -182,7 +182,7 @@ Ut_pred = model.predict(Th_test)
 mse     = np.mean((Ut_pred - Ut_test) ** 2)
 print(f"\n[EVAL]  Held-out IC test MSE: {mse:.6e}   RMSE: {mse**0.5:.6e}")
 
-# Rollout on held-out IC — SSP-RK3 with CFL substeps (same as baselines)
+# Rollout on held-out IC — SSP-RK3 with CFL substeps
 def kandy_rhs(u):
     """Compute u_t = KANDy(phi(u)) for spatial field u (1, N_x)."""
     u_1d = u.ravel()
