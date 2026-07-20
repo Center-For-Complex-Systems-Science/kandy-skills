@@ -65,15 +65,15 @@ skills/kandy/
 │   ├── symbolic.md       # symbolic extraction, custom libraries, scoring, LaTeX
 │   ├── numerics.md       # finite-volume PDE data generation
 │   └── api.md            # full public API reference
-└── examples/             # 18 complete, runnable scripts
-    ├── lorenz_example.py
-    ├── henon_example.py
-    ├── ikeda_example.py
-    ├── kuramoto_example.py
-    ├── burgers_example.py
-    ├── kuramoto_sivashinsky_example.py
-    ├── navier_stokes_example.py
-    └── ...
+└── examples/             # complete, runnable scripts, grouped by fit recipe
+    ├── odes/             # continuous ODEs (Lorenz, …)
+    ├── maps/             # discrete maps (Hénon, Ikeda)
+    ├── oscillators/      # coupled phase oscillators (Kuramoto, …)
+    ├── pdes/             # 1D PDEs (Burgers, Kuramoto–Sivashinsky)
+    ├── fluids/           # fluid dynamics (3D Navier–Stokes)
+    ├── mathbio/          # mathematical biology (predator-prey)
+    ├── geometry/         # engineered lifts on manifolds (Hopf, trefoil)
+    └── baselines/        # SINDy / PDE-FIND comparisons
 ```
 
 ## Requirements

@@ -97,24 +97,24 @@ SSP-RK2/3) for 1D periodic conservation laws: `solve_burgers`,
 
 ## Examples
 
-Complete, runnable scripts in `examples/` — start from the one closest to the
-target system:
+Complete, runnable scripts in `examples/`, grouped by fit recipe — pick the
+category matching the data type, then the script closest to the target system:
 
-| System | Script | Notable technique |
-|---|---|---|
-| Lorenz-63 (chaotic ODE) | `lorenz_example.py` | Polynomial lift with cross-terms |
-| Hénon map | `henon_example.py` | Discrete map, [x, y, x²] lift |
-| Ikeda map | `ikeda_example.py` | Custom trig physics lift + rollout loss |
-| Holling Type II | `holling_type_ii_example.py` | 21D physics library, Adam |
-| Kuramoto | `kuramoto_example.py` | Periodic phases, `angle_mse` |
-| Adaptive Kuramoto | `adaptive_kuramoto_example.py` | Coupled 20D lift |
-| Hopf fibration | `hopf_example.py` | Map S³ → S², engineered lift |
-| Trefoil knot | `trefoil_knot_example.py`, `trefoil_knot_hero.py` | Hopf fibers, figures |
-| Inviscid Burgers | `burgers_example.py`, `burgers_fourier_example.py` | FV data, flux-form lift |
-| Kuramoto–Sivashinsky | `kuramoto_sivashinsky_example.py` | 12D local PDE features |
-| Navier–Stokes (ABC flow) | `navier_stokes_example.py` | 3D vorticity/velocity lift |
-| iEEG (real data) | `ieeg_example.py`, `ieeg_relu_gated.py`, `ieeg_kuramoto_virtual_surgery.py` | ReLU-gated oscillators, virtual surgery |
-| Baselines | `sindy_baselines.py`, `pdefind_baseline.py` | SINDy / PDE-FIND comparison |
+| Category | System | Script | Notable technique |
+|---|---|---|---|
+| `odes/` | Lorenz-63 (chaotic ODE) | `lorenz_example.py` | Polynomial lift with cross-terms |
+| `odes/` | x + sin(x) recovery | `sinx_recover_sine.py` | Restricted symbol library for clean `auto_symbolic` |
+| `maps/` | Hénon map | `henon_example.py` | Discrete map, [x, y, x²] lift |
+| `maps/` | Ikeda map | `ikeda_example.py` | Custom trig physics lift + rollout loss |
+| `oscillators/` | Kuramoto | `kuramoto_example.py` | Periodic phases, `angle_mse` |
+| `oscillators/` | Adaptive Kuramoto | `adaptive_kuramoto_example.py` | Coupled 20D lift |
+| `pdes/` | Inviscid Burgers | `burgers_example.py`, `burgers_fourier_example.py` | FV data, flux-form lift |
+| `pdes/` | Kuramoto–Sivashinsky | `kuramoto_sivashinsky_example.py` | 12D local PDE features |
+| `fluids/` | Navier–Stokes (ABC flow) | `navier_stokes_example.py` | 3D vorticity/velocity lift |
+| `mathbio/` | Holling Type II | `holling_type_ii_example.py` | 21D physics library, Adam |
+| `geometry/` | Hopf fibration | `hopf_example.py` | Map S³ → S², engineered lift |
+| `geometry/` | Trefoil knot | `trefoil_knot_example.py`, `trefoil_knot_hero.py` | Hopf fibers, figures |
+| `baselines/` | Baselines | `sindy_baselines.py`, `pdefind_baseline.py` | SINDy / PDE-FIND comparison |
 
 ## Full API
 

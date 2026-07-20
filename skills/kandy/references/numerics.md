@@ -82,5 +82,5 @@ minmod(a, b); van_leer(a, b); superbee(a, b)
 3. Fit KANDy on (features, u_t) pairs; validate by rolling the discovered RHS
    forward with the same FV machinery and comparing space-time fields.
 
-See `examples/burgers_example.py`, `examples/burgers_fourier_example.py`, and
-`examples/kuramoto_sivashinsky_example.py`.
+See `examples/pdes/burgers_example.py`, `examples/pdes/burgers_fourier_example.py`,
+and `examples/pdes/kuramoto_sivashinsky_example.py`.
