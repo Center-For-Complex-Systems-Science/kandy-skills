@@ -9,7 +9,7 @@ x·y ≠ h(u(x) + v(y)) for any continuous h, u, v).
 
 All lifts inherit from `Lift` (ABC) and implement `__call__(X)` → lifted array,
 `output_dim`, `feature_names` (an attribute, not a method), and optionally
-`fit(X)` for data-dependent lifts (`RadialBasisLift`, `DMDLift`, `KANELift`).
+`fit(X)` for data-dependent lifts (`RadialBasisLift`, `DMDLift`).
 `KANDy.fit` calls `lift.fit(X)` automatically.
 
 ## Two design rules
@@ -45,6 +45,22 @@ Diagnostic: if the fit is perfect but the recovered constants are wrong, check
 means the lifted features are near-dependent — either from redundant
 coordinates (this section) or from a conserved quantity in the data
 (`mathbio/sir_example.py`).
+
+**But a healthy condition number does not clear you.** `cond` sees only
+*linear* dependence among lift coordinates, and a KAN edge is an arbitrary
+univariate function — so any *nonlinear* relation `F(θᵢ, θⱼ, …) = 0` on the
+sampled data breaks uniqueness just as badly, invisibly. In
+`geometry/spherical_pendulum_example.py`, data confined to the constraint
+manifold S² satisfies `θ4² + θ5² − (θ6² − θ6⁴) ≡ 0` to 4e-16 while `cond` reads
+a perfectly benign 6.76; the fit reaches R² = 0.9985 and returns the wrong
+equation. Sampling off the manifold (a shell `0.7 ≤ |q| ≤ 1.3`) leaves `cond`
+essentially unchanged at 6.29, kills the nonlinear relation (residual 1.12),
+and recovers every coefficient exactly.
+
+So the real rule is about the *data*, not just the lift: if your states obey a
+constraint or conservation law, the lifted features inherit it. Fit on samples
+that violate it — independent draws over a box or shell, not trajectories —
+and keep the on-manifold data for rollout validation.
 
 ## PolynomialLift
 
@@ -143,15 +159,19 @@ For Kuramoto-type systems, put the pairwise coupling terms sin(θⱼ−θᵢ) in
 lift. For gated/switched dynamics (e.g. iEEG ReLU-gated oscillators), put the
 gate functions in the lift.
 
-## KANELift (EXPERIMENTAL)
+**Rational lifts.** When the RHS has a denominator coupling several variables,
+the reciprocal itself is the feature a separable KAN cannot build — see
+`geometry/mobius_riemann_sphere_example.py` (`u = 1/|cz+d|²`) and
+`mathbio/holling_type_ii_example.py`. Two cautions specific to these:
 
-```python
-KANELift(latent_dim, hidden_dim=None, grid=5, k=3)
-```
-
-Learns φ itself as a KAN autoencoder; the encoder is symbolically extractable
-after training (`lift.get_formula()`). Train with `lift.train_koopman(...)`.
-Prefer explicit lifts whenever the physics is even partially known.
+- **Bound the feature range.** Near a pole the reciprocal diverges and the
+  spline grid cannot cover it. Sample away from the pole (the Möbius example
+  excludes a disc around it, 3.85 % rejection) and print the lifted-feature
+  ranges to confirm.
+- **Watch for a hidden partition of unity.** Reciprocal families often sum back
+  to a constant: expanding `|cz+d|²·u = 1` makes `[u, xu, yu, r²u]` exactly
+  linearly dependent with the bias, `cond = 1.3e16`. Drop one feature
+  analytically (`cond` → 9.7) rather than hoping the fit sorts it out.
 
 ## Choosing degree / size
 

@@ -98,4 +98,5 @@ demands.
 | `frenet_serret_example.py` | Frenet–Serret moving frame | 11D autonomous system carrying κ and τ as states; every RHS term is invariant × frame component |
 | `unicycle_se2_example.py` | Kinematic unicycle on SE(2) | Mixed trig×linear cross-terms (`v·cos θ`) that **no stock lift** provides — neither `PolynomialLift` nor `FourierLift` |
 | `torus_winding_example.py` | Flat 2-torus and winding flows | Map mode + winding flow; 5-feature trig lift with a known 3×5 mixing matrix |
-| `mobius_riemann_sphere_example.py` | Möbius maps on the Riemann sphere | Rational lift `[u, xu, yu, r²u]` with `u = 1/|cz+d|²`; the linear identity is verified to machine precision before training |
+| `mobius_riemann_sphere_example.py` | Möbius maps on the Riemann sphere | The only *rational* lift — `u = 1/|cz+d|²`; pole exclusion to keep features bounded, and dropping `u` itself because `[u, xu, yu, r²u]` is exactly rank-deficient against the constant (`cond` 1.3e16 → 9.7) |
+| `spherical_pendulum_example.py` | Spherical pendulum on S² | Constraint-force lift (triple products `qᵢ·|p|²`); why a healthy `cond()` can still hide a *separable* degeneracy, and how off-manifold sampling fixes it |

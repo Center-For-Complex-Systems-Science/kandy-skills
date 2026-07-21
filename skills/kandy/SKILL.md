@@ -66,7 +66,10 @@ traj     = model.rollout(x0, T=5000, dt=0.005)   # autoregressive validation
 # ↓ get_formula MUTATES the model — do rollout/predict/plots BEFORE this line
 formulas = model.get_formula(var_names=FEATURE_NAMES)     # SymPy expressions
 r2       = model.score_formula(formulas, X_test, Xdot_test, var_names=FEATURE_NAMES)
-A        = model.get_A()                          # (n × m) mixing matrix
+# Do NOT use model.get_A() for coefficients — it returns near-init spline
+# scales that correlate with nothing. Least-squares the network output onto
+# the lifted features instead (see references/api.md):
+A, *_    = np.linalg.lstsq(model.lift(X), model.predict(X), rcond=None); A = A.T
 ```
 
 Two things that bite immediately:
@@ -87,7 +90,10 @@ Sampling matters as much as the lift: if the system has a **conserved
 quantity** (total population, energy), trajectory data lies on a lower-dimensional
 manifold where the lifted features are linearly dependent and the coefficients
 are non-identifiable. Sample states independently over a box instead — check
-`np.linalg.cond` of the lifted design matrix (`mathbio/sir_example.py`).
+`np.linalg.cond` of the lifted design matrix (`mathbio/sir_example.py`). Note
+`cond` catches only *linear* dependence: a constraint manifold can leave it
+looking healthy while still making coefficients non-unique
+(`geometry/spherical_pendulum_example.py`).
 
 ## Choosing the lift (most critical decision)
 
@@ -100,7 +106,6 @@ are non-identifiable. Sample states independently over a box instead — check
 | Data-driven Koopman eigenfunctions | `DMDLift(n_modes, dictionary=PolynomialLift(2))` |
 | Scalar time series | `DelayEmbedding(delays)` |
 | Known physics terms (trig products, gates, coupling) | `CustomLift(fn, output_dim)` |
-| Learn the lift itself (experimental) | `KANELift(latent_dim)` |
 
 Details and code for every lift: `references/lifts.md`.
 
@@ -184,7 +189,8 @@ category matching the data type, then the script closest to the target system:
 | `geometry/` | Frenet–Serret frame | `frenet_serret_example.py` | Bilinear moving frame; κ, τ carried as states |
 | `geometry/` | Unicycle / Dubins car | `unicycle_se2_example.py` | `v·cos θ`: mixed trig×linear, no stock lift works |
 | `geometry/` | 2-torus winding | `torus_winding_example.py` | Trig embedding lift; map mode + flow |
-| `geometry/` | Möbius transformations | `mobius_riemann_sphere_example.py` | Rational lift `1/|cz+d|²` |
+| `geometry/` | Möbius transformations | `mobius_riemann_sphere_example.py` | Rational lift `1/|cz+d|²`; pole exclusion, rank diagnostics |
+| `geometry/` | Spherical pendulum | `spherical_pendulum_example.py` | Constraint-force lift; `cond()` misses separable degeneracy |
 
 ## Full API
 

@@ -30,13 +30,19 @@ Attributes after fit: `model_` (the underlying PyKAN model), `lift`,
 > and `score_formula` returns `NaN` (not an error) if they don't match the
 > symbols in the formulas — pass the same list to both.
 
-> **`get_A()` is not the coefficient matrix.** It returns PyKAN's per-edge
-> `scale_sp`, and an edge computes `scale_sp * spline(θ) + scale_base * base(θ)`
-> — the spline's own amplitude is unconstrained, so the split between
-> `scale_sp` and the spline shape is a normalisation convention, not a physical
-> quantity. On a system whose true coefficients are `(-1, 1, -1/3)`, `get_A()`
-> returns `(1.12, 1.06, 1.01)`. It is useful for reading the **sparsity
-> pattern** (which edges are live) and nothing more.
+> **`get_A()` does not return the coefficients — do not use it.** It returns
+> PyKAN's per-edge `scale_sp`, and an edge computes
+> `scale_base * base(θ) + scale_sp * spline(θ)` with `spline(θ) = Σ coef·B(θ)`.
+> Since `scale_sp` and `coef` are both trainable and multiply each other, the
+> optimizer puts the fit into `coef` and leaves `scale_sp` near its random
+> initialization — measured drift over a full fit is often < 0.01. `get_A()`
+> is therefore reporting initialization noise.
+>
+> It correlates with nothing: not magnitude, not sign, not even the sparsity
+> pattern. On a linear system fitted to RMSE 1e-5 with true coefficients
+> `[[3, -1, 0], [0, 0.5, 2]]`, `get_A()` returned
+> `[[0.923, -0.001, 0.854], [0.882, 0.000, 0.932]]` — ~0 for the two true
+> nonzeros, ~0.9 for two true zeros.
 >
 > To recover actual coefficients, either read the slope of each edge activation
 > (`get_edge_activation`), or least-squares the network output against the
@@ -59,7 +65,6 @@ RadialBasisLift(n_centers, sigma=None, center_method="random")
 DMDLift(n_modes, dictionary=None, sort_by="magnitude")
 DelayEmbedding(delays=3)   # (T, n) -> (T - delays + 1, n*delays); TRIM TARGETS: X_dot[delays-1:]
 CustomLift(fn, output_dim, torch_fn=None, name="custom")   # torch_fn required for rollout-loss training
-KANELift(latent_dim, hidden_dim=None, grid=5, k=3)   # EXPERIMENTAL
 ```
 
 ## Training
