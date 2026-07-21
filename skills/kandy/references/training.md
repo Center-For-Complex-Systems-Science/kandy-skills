@@ -36,6 +36,51 @@ Prefer true derivatives (`X_dot`) when the simulator provides them. Otherwise
 pass `dt` for central differences — but denoise first if the data is
 experimental; central differences amplify noise.
 
+## Is the fit capacity-limited or structurally limited?
+
+When a fit stalls below R²≈1, refine `grid` (5 → 10 → 20 → 40) and watch:
+
+- **R² improves** → a resolution problem. Keep more knots.
+- **R² is flat** → the lift is missing a term. More capacity will not help; add
+  the feature instead.
+
+The plateau happens because a separable KAN computes `sum_j psi_j(theta_j)`,
+so any genuine product of two states is unreachable no matter how fine the
+splines. `mathbio/hodgkin_huxley_example.py` measures this: the gating equation
+`dm/dt = alpha(V) - (alpha+beta)(V)*m` sits at R²≈0.990 across an 8x grid
+refinement (spread ~0.001), and jumps to 1.000000 the moment the products are
+supplied in the lift.
+
+Note the trap: 0.990 looks like success. Always run the refinement check before
+concluding a lift is adequate.
+
+## Stiff systems: scale the targets per equation
+
+The loss is an unweighted MSE over all output equations, so an equation whose
+derivative is orders of magnitude smaller than the others contributes nothing
+and is effectively not fitted. This bites exactly where it hurts: the slow
+variable is usually the one carrying the interesting physics (a permittivity
+variable, a slow gate, an adiabatic invariant).
+
+Check first, then fix by fitting on unit-variance targets and rescaling the
+recovered formulas afterwards:
+
+```python
+scale = X_dot.std(axis=0)
+print(scale.max() / scale.min())          # > ~100 means you must scale
+
+model.fit(X=states, X_dot=X_dot / scale, ...)
+
+# predictions and formulas are in scaled units — undo it
+physical = model.predict(states) * scale
+formula_i = sympy.expand(formulas[i] * float(scale[i]))
+```
+
+`mathbio/epileptor_example.py` is the worked case: `tau0 = 2857` makes `dz/dt`
+~6000x smaller than the fast equations, and without scaling its R² drops to
+0.86 with coefficients off by 45–75%. Scaling also conditions the problem, so
+LBFGS converges in far fewer steps.
+
 ## Discrete maps
 
 Pass current state as `X` and next state as `X_dot`; KANDy learns the one-step

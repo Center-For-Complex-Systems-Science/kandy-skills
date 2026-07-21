@@ -1,0 +1,8 @@
+# PyKAN writes checkpoints to ./model relative to the working directory
+model/
+
+# Example scripts write figures next to wherever they are run from
+results/
+
+__pycache__/
+*.pyc

@@ -8,9 +8,43 @@ structurally incorrect, not merely inaccurate (bilinear obstruction theorem:
 x·y ≠ h(u(x) + v(y)) for any continuous h, u, v).
 
 All lifts inherit from `Lift` (ABC) and implement `__call__(X)` → lifted array,
-`output_dim`, `feature_names()`, and optionally `fit(X)` for data-dependent
-lifts (`RadialBasisLift`, `DMDLift`, `KANELift`). `KANDy.fit` calls
-`lift.fit(X)` automatically.
+`output_dim`, `feature_names` (an attribute, not a method), and optionally
+`fit(X)` for data-dependent lifts (`RadialBasisLift`, `DMDLift`, `KANELift`).
+`KANDy.fit` calls `lift.fit(X)` automatically.
+
+## Two design rules
+
+**1. Include products of DIFFERENT variables. Exclude powers of a SINGLE
+variable.**
+
+The first half is the bilinear obstruction above: `x·y` cannot be built from
+separable functions, so it must be a lift coordinate. The second half is the
+part that gets written backwards. A spline edge already *is* an arbitrary
+univariate function, so `x²`, `x³`, `sin x`, `tanh x` need not appear in φ —
+the edge learns them from data with no dictionary
+(`odes/pendulum_dictionary_completion_example.py` recovers `sin θ` this way).
+
+**2. Lift coordinates must be functionally independent of one another.**
+
+Adding `x²` alongside `x` is not merely redundant, it is harmful. Because an
+edge on `x²` can represent any function of `x` (the map is invertible on the
+sampled range), the two edges become interchangeable: the decomposition is
+non-unique, and symbolic extraction returns meaningless coefficients — often
+quartics like `(a - b·x²)²` — even at R² = 1. Same for `x` and `x³`. Drop the
+power and let the edge learn it.
+
+Consequence for the sections below: `PolynomialLift(degree=d)` supplies every
+monomial, including the single-variable powers rule 2 warns about. It fits
+fine, but for **interpretable** results prefer a `CustomLift` carrying the raw
+states plus only the genuine cross-products. Compare
+`mathbio/lotka_volterra_competition_example.py` (minimal lift → exact
+coefficients) against the same system fitted with `PolynomialLift`.
+
+Diagnostic: if the fit is perfect but the recovered constants are wrong, check
+`np.linalg.cond(np.column_stack([Theta, np.ones(len(Theta))]))`. A large value
+means the lifted features are near-dependent — either from redundant
+coordinates (this section) or from a conserved quantity in the data
+(`mathbio/sir_example.py`).
 
 ## PolynomialLift
 
@@ -19,11 +53,27 @@ PolynomialLift(degree=2, include_bias=False)
 ```
 
 All monomials up to `degree`. `output_dim = C(n+d, d)` (minus 1 without bias).
-The workhorse for polynomial ODEs and maps.
+Convenient for polynomial ODEs and maps when you only need predictive
+accuracy.
 
 ```python
 # Lorenz (RHS has xy and xz):  φ(x,y,z) = (x, y, z, x², xy, xz, y², yz, z²)
 lift = PolynomialLift(degree=2)
+```
+
+For interpretable extraction, prefer the minimal hand-built version — states
+plus cross-products only, dropping the `x²`, `y²`, `z²` coordinates that
+duplicate what the edges can learn (this is what `odes/lorenz_example.py`
+does):
+
+```python
+lift = CustomLift(
+    fn=lambda X: np.column_stack([
+        X[:, 0], X[:, 1], X[:, 2],
+        X[:, 0] * X[:, 1], X[:, 0] * X[:, 2], X[:, 1] * X[:, 2],
+    ]),
+    output_dim=6, name="lorenz_lift",
+)
 ```
 
 ## FourierLift

@@ -66,13 +66,14 @@ skills/kandy/
 │   ├── numerics.md       # finite-volume PDE data generation
 │   └── api.md            # full public API reference
 └── examples/             # complete, runnable scripts, grouped by fit recipe
-    ├── odes/             # continuous ODEs (Lorenz, …)
+    ├── odes/             # continuous ODEs + delay DEs (Lorenz, Van der Pol, Mackey–Glass, …)
     ├── maps/             # discrete maps (Hénon, Ikeda)
-    ├── oscillators/      # coupled phase oscillators (Kuramoto, …)
+    ├── oscillators/      # coupled phase oscillators (Kuramoto, network reconstruction, …)
     ├── pdes/             # 1D PDEs (Burgers, Kuramoto–Sivashinsky)
-    ├── fluids/           # fluid dynamics (3D Navier–Stokes)
-    ├── mathbio/          # mathematical biology (predator-prey)
-    └── geometry/         # engineered lifts on manifolds (Hopf, trefoil)
+    ├── fluids/           # fluid dynamics (vortex shedding, 2D turbulence, 3D Navier–Stokes)
+    ├── mathbio/          # mathematical biology (SIR, Lotka–Volterra, Epileptor, …)
+    └── geometry/         # engineered lifts on manifolds and Lie groups
+                          #   (Hopf, trefoil, Euler top, Heisenberg, SE(2), …)
 ```
 
 ## Requirements

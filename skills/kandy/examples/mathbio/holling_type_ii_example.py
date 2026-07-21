@@ -341,32 +341,32 @@ fig, ax = plot_attractor_overlay(
     dim_x=0, dim_y=1,
     labels=["True", "KANDy"],
     colors=["#1f77b4", "#d62728"],
-    title="Holling Type II: phase portrait",
-    save="results/HollingTypeII/phase_portrait",
 )
+fig.suptitle("Holling Type II: phase portrait")
+fig.savefig("results/HollingTypeII/phase_portrait.png", dpi=300, bbox_inches="tight")
 plt.close(fig)
 
 # 7c. Loss curves
 if hasattr(model, "train_results_") and model.train_results_:
     fig, ax = plot_loss_curves(
         model.train_results_,
-        title="Holling Type II training loss",
-        save="results/HollingTypeII/loss_curves",
     )
+    fig.suptitle("Holling Type II training loss")
+    fig.savefig("results/HollingTypeII/loss_curves.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 # 7d. Edge activations
 n_sub   = min(4096, n_train)
 sub_idx = np.random.choice(n_train, n_sub, replace=False)
 train_t = torch.tensor(Theta_train_n[sub_idx], dtype=torch.float32, device=DEVICE)
-fig = plot_all_edges(
+fig, _axes = plot_all_edges(
     model.model_,
     X=train_t,
-    input_names=FEATURE_NAMES,
-    output_names=["N_{n+1}", "P_{n+1}"],
-    title="Holling Type II KAN edge activations",
-    save="results/HollingTypeII/edge_activations",
+    in_var_names=FEATURE_NAMES,
+    out_var_names=["N_{n+1}", "P_{n+1}"],
 )
+fig.suptitle("Holling Type II KAN edge activations")
+fig.savefig("results/HollingTypeII/edge_activations.png", dpi=300, bbox_inches="tight")
 plt.close(fig)
 
 print("[FIGS]  Saved results/HollingTypeII/")

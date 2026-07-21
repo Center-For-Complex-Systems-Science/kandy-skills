@@ -184,14 +184,14 @@ plt.close(fig)
 train_theta = torch.tensor(
     engineered_hopf_lift(Q[: int(N * 0.70)]), dtype=torch.float32
 )
-fig = plot_all_edges(
+fig, _axes = plot_all_edges(
     model_eng.model_,
     X=train_theta,
-    input_names=ENG_FEATURE_NAMES,
-    output_names=["p1", "p2", "p3"],
-    title="Hopf (engineered) KAN edge activations",
-    save="results/Hopf/edge_activations_eng",
+    in_var_names=ENG_FEATURE_NAMES,
+    out_var_names=["p1", "p2", "p3"],
 )
+fig.suptitle("Hopf (engineered) KAN edge activations")
+fig.savefig("results/Hopf/edge_activations_eng.png", dpi=300, bbox_inches="tight")
 plt.close(fig)
 
 print("[FIGS]  Saved results/Hopf/")

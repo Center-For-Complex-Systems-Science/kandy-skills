@@ -353,23 +353,23 @@ plt.close(fig)
 if hasattr(model, "train_results_") and model.train_results_:
     fig, ax = plot_loss_curves(
         model.train_results_,
-        title="N-S training loss",
-        save="results/NavierStokes/loss_curves",
     )
+    fig.suptitle("N-S training loss")
+    fig.savefig("results/NavierStokes/loss_curves.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 # 7c. Edge activations (subsample)
 n_sub   = min(4000, int(N_total * 0.70))
 sub_idx = np.random.choice(int(N_total * 0.70), n_sub, replace=False)
 train_t = torch.tensor(Theta[sub_idx], dtype=torch.float32)
-fig = plot_all_edges(
+fig, _axes = plot_all_edges(
     model.model_,
     X=train_t,
-    input_names=FEATURE_NAMES,
-    output_names=["u_t", "v_t", "w_t"],
-    title="N-S KAN edge activations",
-    save="results/NavierStokes/edge_activations",
+    in_var_names=FEATURE_NAMES,
+    out_var_names=["u_t", "v_t", "w_t"],
 )
+fig.suptitle("N-S KAN edge activations")
+fig.savefig("results/NavierStokes/edge_activations.png", dpi=300, bbox_inches="tight")
 plt.close(fig)
 
 print("[FIGS]  Saved results/NavierStokes/")
