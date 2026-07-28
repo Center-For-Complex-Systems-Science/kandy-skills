@@ -167,8 +167,8 @@ category matching the data type, then the script closest to the target system:
 | `odes/` | Koopman slow manifold | `koopman_slow_manifold_example.py` | `DMDLift`: data-derived Koopman coordinates; exact spectrum recovery; EDMD traps |
 | `maps/` | Hénon map | `henon_example.py` | Discrete map, [x, y, x²] lift |
 | `maps/` | Ikeda map | `ikeda_example.py` | Custom trig physics lift + rollout loss |
-| `oscillators/` | Kuramoto | `kuramoto_example.py` | Periodic phases, `angle_mse` |
-| `oscillators/` | Adaptive Kuramoto | `adaptive_kuramoto_example.py` | Coupled 20D lift |
+| `oscillators/` | Kuramoto | `kuramoto_example.py` | Independent pair-sine lift; effective linear readout |
+| `oscillators/` | Adaptive Kuramoto | `adaptive_kuramoto_example.py` | Kappa-trig product lift; separate phase/kappa models |
 | `oscillators/` | Network reconstruction | `network_reconstruction_example.py` | Recover the adjacency matrix; per-node regression; unknown coupling function |
 | `pdes/` | Inviscid Burgers | `burgers_example.py`, `burgers_fourier_example.py` | FV data, flux-form lift |
 | `pdes/` | Kuramoto–Sivashinsky | `kuramoto_sivashinsky_example.py` | 12D local PDE features |

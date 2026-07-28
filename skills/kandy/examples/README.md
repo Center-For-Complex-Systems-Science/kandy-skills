@@ -46,8 +46,8 @@ Periodic phases need `angle_mse` rollout loss so errors wrap to (−π, π].
 
 | Script | System | Highlights |
 |---|---|---|
-| `kuramoto_example.py` | Kuramoto oscillators | Periodic phases; `angle_mse` rollout loss |
-| `adaptive_kuramoto_example.py` | Adaptive Kuramoto–Sakaguchi | 20D coupled lift; adaptive coupling weights |
+| `kuramoto_example.py` | Kuramoto oscillators | Independent pair-sine lift; effective linear readout |
+| `adaptive_kuramoto_example.py` | Adaptive Kuramoto–Sakaguchi | Kappa-trig product lift; separate phase/kappa models |
 | `network_reconstruction_example.py` | Kuramoto on a sparse graph | **Recovering the adjacency matrix**: one regression per node, edge amplitude = coupling strength. Assuming the wrong coupling function invents *false edges*; a phase-locked network is unidentifiable |
 
 ## `pdes/` — partial differential equations
