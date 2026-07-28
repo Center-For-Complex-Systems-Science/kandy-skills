@@ -333,6 +333,11 @@ r_pred = np.abs(np.mean(np.exp(1j * pred_theta), axis=1))
 rmse_r = np.sqrt(np.mean((r_pred - r_true) ** 2))
 print(f"[EVAL]  Order parameter RMSE r: {rmse_r:.6f}", flush=True)
 
+signal_true = np.cos(true_theta)
+signal_pred = np.cos(pred_theta)
+rmse_signal = np.sqrt(np.mean((signal_pred - signal_true) ** 2))
+print(f"[EVAL]  Oscillator signal RMSE cos(theta): {rmse_signal:.6f}", flush=True)
+
 # ---------------------------------------------------------------------------
 # 6. Effective symbolic readout
 # ---------------------------------------------------------------------------
@@ -407,6 +412,19 @@ print("           kcij = kappa_ij*cos(theta_j-theta_i)")
 print(f"           phase max coefficient error = {phase_coef_err:.2e}")
 print(f"           kappa max coefficient error = {kappa_coef_err:.2e}\n")
 
+checks_ok = (
+    rmse_theta < 5e-2
+    and rmse_kappa < 1e-2
+    and rmse_signal < 5e-2
+    and rmse_r < 5e-3
+    and phase_coef_err < 1e-3
+    and kappa_coef_err < 1e-3
+)
+print(
+    f"[CHECK] {'PASS' if checks_ok else 'FAIL'}: rollout and coefficients within thresholds\n",
+    flush=True,
+)
+
 print("--- Phase dynamics dtheta/dt ---")
 for i, formula in enumerate(phase_formulas):
     print(f"  dtheta{i}/dt = {formula}")
@@ -439,7 +457,23 @@ fig.savefig("results/Adaptive-Kuramoto/phase_trajectories.png", dpi=300, bbox_in
 fig.savefig("results/Adaptive-Kuramoto/phase_trajectories.pdf", dpi=300, bbox_inches="tight")
 plt.close(fig)
 
-# 7b. Coupling weight trajectories for the first four directed couplings.
+# 7b. Oscillator signals x_i(t) = cos(theta_i)
+fig, axes = plt.subplots(N, 1, figsize=(8, 2 * N), sharex=True)
+for i, ax in enumerate(axes):
+    ax.plot(t_roll, signal_true[:, i], color=colors[i], lw=1.2, label="True")
+    ax.plot(t_roll, signal_pred[:, i], color=colors[i], lw=1.0, ls="--", label="KANDy")
+    ax.set_ylabel(f"$\\cos(\\theta_{i})$")
+    ax.set_ylim(-1.1, 1.1)
+    if i == 0:
+        ax.legend(loc="upper right", fontsize=7)
+axes[-1].set_xlabel("time")
+fig.suptitle("Adaptive Kuramoto: oscillator signals", fontsize=11)
+fig.tight_layout()
+fig.savefig("results/Adaptive-Kuramoto/oscillator_signals.png", dpi=300, bbox_inches="tight")
+fig.savefig("results/Adaptive-Kuramoto/oscillator_signals.pdf", dpi=300, bbox_inches="tight")
+plt.close(fig)
+
+# 7c. Coupling weight trajectories for the first four directed couplings.
 n_show = min(4, N_OD)
 fig, axes = plt.subplots(n_show, 1, figsize=(8, 2 * n_show), sharex=True)
 if n_show == 1:
@@ -456,7 +490,7 @@ fig.savefig("results/Adaptive-Kuramoto/kappa_trajectories.png", dpi=300, bbox_in
 fig.savefig("results/Adaptive-Kuramoto/kappa_trajectories.pdf", dpi=300, bbox_inches="tight")
 plt.close(fig)
 
-# 7c. Order parameter
+# 7d. Order parameter
 fig, ax = plt.subplots(figsize=(8, 3))
 ax.plot(t_roll, r_true, color="steelblue", lw=1.4, label="True $r(t)$")
 ax.plot(t_roll, r_pred, color="tomato", lw=1.0, ls="--", label="KANDy $r(t)$")
@@ -470,7 +504,7 @@ fig.savefig("results/Adaptive-Kuramoto/order_parameter.png", dpi=300, bbox_inche
 fig.savefig("results/Adaptive-Kuramoto/order_parameter.pdf", dpi=300, bbox_inches="tight")
 plt.close(fig)
 
-# 7d. Coefficient heatmaps
+# 7e. Coefficient heatmaps
 def coefficient_heatmap(true_coef, learned_coef, feature_names, out_names, save):
     fig, axes = plt.subplots(1, 2, figsize=(12, max(3.5, 0.22 * len(out_names))), sharey=True)
     true_terms = true_coef[:, 1:]
@@ -508,7 +542,7 @@ coefficient_heatmap(
     "results/Adaptive-Kuramoto/kappa_linear_coefficients",
 )
 
-# 7e. Loss curves
+# 7f. Loss curves
 if hasattr(model_phase, "train_results_") and model_phase.train_results_:
     fig, ax = plot_loss_curves(
         model_phase.train_results_,

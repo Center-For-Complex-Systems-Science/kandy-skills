@@ -169,7 +169,7 @@ category matching the data type, then the script closest to the target system:
 | `maps/` | Ikeda map | `ikeda_example.py` | Custom trig physics lift + rollout loss |
 | `oscillators/` | Kuramoto | `kuramoto_example.py` | Independent pair-sine lift; effective linear readout |
 | `oscillators/` | Adaptive Kuramoto | `adaptive_kuramoto_example.py` | Kappa-trig product lift; separate phase/kappa models |
-| `oscillators/` | Network reconstruction | `network_reconstruction_example.py` | Recover the adjacency matrix; per-node regression; unknown coupling function |
+| `oscillators/` | Network reconstruction | `network_reconstruction_example.py` | Recover adjacency; per-node regression; post-training pruning |
 | `pdes/` | Inviscid Burgers | `burgers_example.py`, `burgers_fourier_example.py` | FV data, flux-form lift |
 | `pdes/` | Kuramoto–Sivashinsky | `kuramoto_sivashinsky_example.py` | 12D local PDE features |
 | `fluids/` | Navier–Stokes (ABC flow) | `navier_stokes_example.py` | 3D vorticity/velocity lift |

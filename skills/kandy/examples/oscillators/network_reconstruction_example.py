@@ -76,8 +76,13 @@ KAN:  N separate models, width = [N-1, 1]
 
 import os
 import time
+import io
+import contextlib
 import numpy as np
 import torch
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-kandy")
+
 import matplotlib
 
 matplotlib.use("Agg")
@@ -157,6 +162,48 @@ def separation(W):
     return on, off, off.max() < on.min()
 
 
+def infer_prune_threshold(W):
+    """Find a data-driven threshold from the largest amplitude gap.
+
+    This is the post-training network pruning step: after each spline edge has
+    been converted to one amplitude, the sorted off-diagonal amplitudes should
+    split into a small residual cluster and a true-edge cluster. The midpoint
+    of the largest adjacent gap is the pruning threshold.
+    """
+    vals = np.sort(np.abs(W[~np.eye(N, dtype=bool)]))
+    gaps = np.diff(vals)
+    gap_idx = int(np.argmax(gaps))
+    return 0.5 * (vals[gap_idx] + vals[gap_idx + 1]), vals[gap_idx], vals[gap_idx + 1]
+
+
+def prune_network(W, threshold):
+    """Zero weak recovered edges and return a binary directed adjacency."""
+    W_pruned = np.where(np.abs(W) >= threshold, W, 0.0)
+    np.fill_diagonal(W_pruned, 0.0)
+    A_hat = (W_pruned > 0).astype(float)
+    return W_pruned, A_hat
+
+
+def adjacency_scores(A_hat):
+    """Precision/recall/F1 for directed off-diagonal adjacency recovery."""
+    mask = ~np.eye(N, dtype=bool)
+    truth = ADJ[mask] > 0
+    pred = A_hat[mask] > 0
+    tp = int(np.logical_and(pred, truth).sum())
+    fp = int(np.logical_and(pred, ~truth).sum())
+    fn = int(np.logical_and(~pred, truth).sum())
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    return precision, recall, f1, tp, fp, fn
+
+
+def quiet_fit(model, **kwargs):
+    """Fit while suppressing PyKAN's per-step console log."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        return model.fit(**kwargs)
+
+
 # ---------------------------------------------------------------------------
 # 1. Baseline — least squares that ASSUMES sinusoidal coupling
 # ---------------------------------------------------------------------------
@@ -199,8 +246,16 @@ for i in range(N):
     model = KANDy(lift=CustomLift(fn=lambda Z: Z, output_dim=N - 1,
                                   name="phase_diffs"),
                   grid=8, k=3, steps=40, seed=SEED)
-    model.fit(X=F, X_dot=targets[sub][:, i:i + 1], val_frac=0.15,
-              test_frac=0.15, lamb=0.0, patience=30, verbose=False)
+    quiet_fit(
+        model,
+        X=F,
+        X_dot=targets[sub][:, i:i + 1],
+        val_frac=0.15,
+        test_frac=0.15,
+        lamb=0.0,
+        patience=30,
+        verbose=False,
+    )
     F_t = torch.tensor(F[:2048], dtype=torch.float32)
     for c, j in enumerate(cols):
         x, y = get_edge_activation(model.model_, 0, c, 0, X=F_t)
@@ -210,6 +265,11 @@ for i in range(N):
             edge_shape = (np.asarray(x).ravel(), y, i, j)
 
 on_k, off_k, sep_k = separation(amp)
+prune_threshold, gap_lo, gap_hi = infer_prune_threshold(amp)
+amp_pruned, A_hat = prune_network(amp, prune_threshold)
+p_hat, r_hat, f1_hat, tp_hat, fp_hat, fn_hat = adjacency_scores(A_hat)
+on_p, off_p, sep_p = separation(amp_pruned)
+
 print(f"[KAN]  done in {time.time() - t0:.0f}s")
 print(f"[KAN]  edge amplitude     {on_k.mean():.4f} +- {on_k.std():.4f} "
       f"(min {on_k.min():.4f})")
@@ -217,6 +277,11 @@ print(f"[KAN]  non-edge amplitude max {off_k.max():.4f} "
       f"(mean {off_k.mean():.4f})")
 print(f"[KAN]  topology separated: {sep_k}   "
       f"separation ratio {on_k.min() / off_k.max():.2f}x")
+print(f"[PRUNE] inferred threshold {prune_threshold:.4f} "
+      f"(largest gap {gap_lo:.4f} -> {gap_hi:.4f})")
+print(f"[PRUNE] directed adjacency precision={p_hat:.3f}, recall={r_hat:.3f}, "
+      f"F1={f1_hat:.3f}  (TP={tp_hat}, FP={fp_hat}, FN={fn_hat})")
+print(f"[PRUNE] topology separated after pruning: {sep_p}")
 
 # Did the spline also recover the coupling FUNCTION?
 xs, ys, ei, ej = edge_shape
@@ -226,6 +291,8 @@ r2_shape = 1.0 - np.sum((ys_c - true_c) ** 2) / np.sum(true_c ** 2)
 print(f"[KAN]  edge ({ei},{ej}) spline vs the true coupling g: "
       f"R^2 = {r2_shape:.5f}")
 print("[KAN]  Neither the wiring nor the coupling function was assumed.")
+check_ok = sep_p and p_hat == 1.0 and r_hat == 1.0 and r2_shape > 0.95
+print(f"[CHECK] {'PASS' if check_ok else 'FAIL'}: pruned topology and coupling function")
 
 # ---------------------------------------------------------------------------
 # 3. The identifiability limit — a locked network tells you nothing
@@ -256,10 +323,11 @@ use_pub_style()
 os.makedirs("results/NetworkReconstruction", exist_ok=True)
 
 # 4a. True vs recovered adjacency
-fig, axes = plt.subplots(1, 3, figsize=(13, 4))
+fig, axes = plt.subplots(1, 4, figsize=(16, 4))
 panels = [(ADJ, "true adjacency"),
           (np.abs(W_sin), "least squares assuming sin"),
-          (amp, "KANDy edge amplitudes")]
+          (amp, "KANDy edge amplitudes"),
+          (A_hat, f"pruned KANDy adjacency\nthreshold={prune_threshold:.3f}")]
 for ax, (M, title) in zip(axes, panels):
     im = ax.imshow(M, cmap="viridis")
     ax.set_title(title, fontsize=10)
@@ -278,6 +346,9 @@ for ax, (W, title) in zip(axes, [(np.abs(W_sin), "assuming sin(.)"),
     o_on, o_off, o_sep = separation(W)
     ax.hist(o_off, bins=18, color="#1f77b4", alpha=0.75, label="non-edges")
     ax.hist(o_on, bins=18, color="#d62728", alpha=0.75, label="true edges")
+    if W is amp:
+        ax.axvline(prune_threshold, color="k", lw=1.1, ls="--",
+                   label="prune threshold")
     ax.set_xlabel("recovered weight")
     ax.set_title(f"{title}\nseparated: {o_sep}", fontsize=10)
     ax.legend(fontsize=8)

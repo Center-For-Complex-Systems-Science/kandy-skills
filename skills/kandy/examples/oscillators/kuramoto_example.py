@@ -199,6 +199,11 @@ r_pred = np.abs(np.mean(np.exp(1j * pred), axis=1))
 rmse_r = np.sqrt(np.mean((r_pred - r_true) ** 2))
 print(f"[EVAL]  Order parameter RMSE r: {rmse_r:.6f}", flush=True)
 
+signal_true = np.cos(THETA_TRUE)
+signal_pred = np.cos(pred)
+rmse_signal = np.sqrt(np.mean((signal_pred - signal_true) ** 2))
+print(f"[EVAL]  Oscillator signal RMSE cos(theta): {rmse_signal:.6f}", flush=True)
+
 # ---------------------------------------------------------------------------
 # 5. Symbolic/effective linear readout
 # ---------------------------------------------------------------------------
@@ -253,6 +258,17 @@ for i, formula in enumerate(formulas):
     print(f"    [TRUE] = {' '.join(true_terms)}", flush=True)
 print(flush=True)
 
+checks_ok = (
+    rmse_theta < 1e-2
+    and rmse_signal < 5e-3
+    and rmse_r < 5e-3
+    and coef_err < 1e-3
+)
+print(
+    f"[CHECK] {'PASS' if checks_ok else 'FAIL'}: rollout and coefficients within thresholds",
+    flush=True,
+)
+
 # ---------------------------------------------------------------------------
 # 6. Figures
 # ---------------------------------------------------------------------------
@@ -277,7 +293,23 @@ fig.savefig("results/Kuramoto/phase_trajectories.png", dpi=300, bbox_inches="tig
 fig.savefig("results/Kuramoto/phase_trajectories.pdf", dpi=300, bbox_inches="tight")
 plt.close(fig)
 
-# 6b. Order parameter
+# 6b. Oscillator signals x_i(t) = cos(theta_i)
+fig, axes = plt.subplots(N, 1, figsize=(8, 2 * N), sharex=True)
+for i, ax in enumerate(axes):
+    ax.plot(t_roll, signal_true[:, i], color=colors[i], lw=1.2, label="True")
+    ax.plot(t_roll, signal_pred[:, i], color=colors[i], lw=1.0, ls="--", label="KANDy")
+    ax.set_ylabel(f"$\\cos(\\theta_{i})$")
+    ax.set_ylim(-1.1, 1.1)
+    if i == 0:
+        ax.legend(loc="upper right", fontsize=7)
+axes[-1].set_xlabel("time")
+fig.suptitle("Kuramoto: oscillator signals", fontsize=11)
+fig.tight_layout()
+fig.savefig("results/Kuramoto/oscillator_signals.png", dpi=300, bbox_inches="tight")
+fig.savefig("results/Kuramoto/oscillator_signals.pdf", dpi=300, bbox_inches="tight")
+plt.close(fig)
+
+# 6c. Order parameter
 fig, ax = plt.subplots(figsize=(8, 3))
 ax.plot(t_roll, r_true, color="steelblue", lw=1.4, label="True $r(t)$")
 ax.plot(t_roll, r_pred, color="tomato", lw=1.0, ls="--", label="KANDy $r(t)$")
@@ -291,7 +323,7 @@ fig.savefig("results/Kuramoto/order_parameter.png", dpi=300, bbox_inches="tight"
 fig.savefig("results/Kuramoto/order_parameter.pdf", dpi=300, bbox_inches="tight")
 plt.close(fig)
 
-# 6c. Coefficient heatmap
+# 6d. Coefficient heatmap
 fig, axes = plt.subplots(1, 2, figsize=(10, 3.5), sharey=True)
 vmax = max(np.max(np.abs(A_true[:, 1:])), np.max(np.abs(A_eff[:, 1:])))
 for ax, mat, title in [
@@ -311,7 +343,7 @@ fig.savefig("results/Kuramoto/linear_coefficients.png", dpi=300, bbox_inches="ti
 fig.savefig("results/Kuramoto/linear_coefficients.pdf", dpi=300, bbox_inches="tight")
 plt.close(fig)
 
-# 6d. Loss curves
+# 6e. Loss curves
 if hasattr(model, "train_results_") and model.train_results_ is not None:
     fig, ax = plot_loss_curves(
         model.train_results_,
