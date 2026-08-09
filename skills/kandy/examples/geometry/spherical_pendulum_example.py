@@ -102,6 +102,8 @@ KAN:  width = [9, 6],  base_fun='zero'
 
 import copy
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import sympy as sp
 import torch
@@ -111,6 +113,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
+from _utils import ensure_outdir, print_check, save_metrics
 from kandy import KANDy, CustomLift
 from kandy.plotting import (
     plot_all_edges,
@@ -336,6 +343,7 @@ def polish(expr, tol: float = 1e-2, places: int = 3):
     return e.xreplace({n: sp.Float(round(float(n), places)) for n in e.atoms(sp.Float)})
 
 
+formula_r2 = {}
 for tag, mdl, Xs, Ys in [("ON-MANIFOLD ", model, X, X_dot),
                          ("OFF-MANIFOLD", model_off, X_off, X_dot_off)]:
     print(f"\n[SYMBOLIC] {tag} model — extracting formulas ...")
@@ -345,6 +353,7 @@ for tag, mdl, Xs, Ys in [("ON-MANIFOLD ", model, X, X_dot),
     for lab, f in zip(LHS, fs):
         print(f"  {lab} = {polish(f)}")
     r2 = mdl.score_formula(fs, Xs, Ys, var_names=FEATURE_NAMES)
+    formula_r2[tag.strip()] = np.asarray(r2).tolist()
     print(f"[SYMBOLIC] Formula R^2 per equation: {np.round(r2, 6)}")
 
 print("\n[SYMBOLIC] True:  dq1/dt = p1,  dq2/dt = p2,  dq3/dt = p3")
@@ -355,11 +364,61 @@ print("[SYMBOLIC] The on-manifold model trades  theta_4^2 + theta_5^2  against")
 print("[SYMBOLIC] theta_6^2 - theta_6^4 in dp3/dt; the off-manifold model cannot.")
 
 # ---------------------------------------------------------------------------
+# 5b. Verification
+#
+#     The headline of this example is that cond() is NOT sufficient: the
+#     on-manifold design matrix looks healthy by its condition number and the
+#     fit reaches R^2 ~ 1, yet the decomposition is non-unique because the
+#     constraint |q| = 1 makes the lifted features functionally (not linearly)
+#     dependent.  So the check gates BOTH condition numbers as healthy AND the
+#     separable residual as non-zero only off-manifold — if cond alone had
+#     caught the degeneracy, the example would have nothing to teach.
+#
+#     The invariant drift along the LEARNED rollout is the label-free criterion:
+#     |q|-1, q.p and E were never in the lift or the loss.
+# ---------------------------------------------------------------------------
+drift_learned = float(max(np.abs(nq_l).max(), np.abs(qp_l).max(),
+                          np.abs(E_l - E0).max()))
+THRESHOLDS = {
+    "network_r2_min": 0.999,
+    "formula_r2_min": 0.99,
+    "rollout_rmse_max": 0.10,
+    "learned_invariant_drift_max": 0.10,
+    "cond_on_manifold_max": 200.0,   # looks healthy — that is the point
+}
+passed = print_check(
+    min(raw_r2) >= THRESHOLDS["network_r2_min"]
+    and min(min(v) for v in formula_r2.values()) >= THRESHOLDS["formula_r2_min"]
+    and rmse <= THRESHOLDS["rollout_rmse_max"]
+    and drift_learned <= THRESHOLDS["learned_invariant_drift_max"]
+    and cond_on <= THRESHOLDS["cond_on_manifold_max"],
+    "Spherical pendulum: rollout, invariants, and the cond() blind spot",
+)
+RESULT_DIR = ensure_outdir("results/SphericalPendulum")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "SphericalPendulum",
+    "category": "geometry",
+    "seed": SEED,
+    "sampling": "uniform box + true RHS (oracle derivatives), on- and off-manifold",
+    "cond_on_manifold": float(cond_on),
+    "cond_off_manifold": float(cond_off),
+    "network_r2": [float(v) for v in raw_r2],
+    "formula_r2": formula_r2,
+    "rollout_rmse": float(rmse),
+    "rollout_rmse_q": float(rmse_q),
+    "rollout_rmse_p": float(rmse_p),
+    "invariant_drift_true": float(max(np.abs(nq_t).max(), np.abs(qp_t).max(),
+                                      np.abs(E_t - E0).max())),
+    "invariant_drift_learned": drift_learned,
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
+
+# ---------------------------------------------------------------------------
 # 6. Figures
 # ---------------------------------------------------------------------------
 use_pub_style()
-OUT = "results/SphericalPendulum"
-os.makedirs(OUT, exist_ok=True)
+OUT = str(ensure_outdir("results/SphericalPendulum"))
 
 # 6a. Trajectory on the sphere — true vs learned, with a wireframe S^2
 fig = plt.figure(figsize=(6.5, 6))

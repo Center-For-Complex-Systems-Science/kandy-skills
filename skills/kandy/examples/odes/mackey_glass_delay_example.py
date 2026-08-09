@@ -74,6 +74,8 @@ KAN:  width = [2, 1]
 """
 
 import os
+import sys
+from pathlib import Path
 import time
 import numpy as np
 import torch
@@ -82,6 +84,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
+from _utils import ensure_outdir, print_check, save_metrics
 from kandy import KANDy, CustomLift, Lift
 from kandy.plotting import get_edge_activation, plot_loss_curves, use_pub_style
 
@@ -326,6 +333,58 @@ print(f"[EVAL]  attractor mean/std — learned {roll.mean():.4f}/{roll.std():.4f
       f"true {series.mean():.4f}/{series.std():.4f}")
 print("[EVAL]  (chaotic system: trajectories decorrelate, so compare the "
       "attractor,\n        not pointwise agreement)")
+
+# ---------------------------------------------------------------------------
+# 8b. Verification
+#
+#     Three separate claims, and the DELAY is the one that matters most: the
+#     lag scan has to peak at the true tau recovered from data, because getting
+#     the embedding wrong makes everything downstream meaningless regardless of
+#     fit quality.  The edge check is the second: the Hill term
+#     beta*x/(1+x^10) appears in no built-in symbolic library, so the only
+#     evidence the spline found it is the shape comparison against ground truth.
+#     Mackey-Glass at tau=17 is chaotic, so the rollout is judged on attractor
+#     statistics, never pointwise.
+# ---------------------------------------------------------------------------
+true_lag = int(TAU / SAMPLE_DT)
+edge_r2_min = float(min(v[3] for v in edge_checks.values()))
+range_err = float(max(abs(roll.min() - series.min()),
+                      abs(roll.max() - series.max())))
+std_rel_err = float(abs(roll.std() - series.std()) / series.std())
+THRESHOLDS = {
+    "recovered_lag_abs_err_max": 0,      # must land exactly on tau = 17 samples
+    "network_r2_min": 0.99,
+    "edge_shape_r2_min": 0.95,           # Hill term learned without a library
+    "attractor_range_abs_err_max": 0.10,
+    "attractor_std_rel_err_max": 0.20,
+}
+passed = print_check(
+    abs(best_lag - true_lag) <= THRESHOLDS["recovered_lag_abs_err_max"]
+    and float(r2_kan) >= THRESHOLDS["network_r2_min"]
+    and edge_r2_min >= THRESHOLDS["edge_shape_r2_min"]
+    and range_err <= THRESHOLDS["attractor_range_abs_err_max"]
+    and std_rel_err <= THRESHOLDS["attractor_std_rel_err_max"],
+    "Mackey-Glass: delay recovered, Hill term learned, attractor reproduced",
+)
+RESULT_DIR = ensure_outdir("results/MackeyGlass")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "MackeyGlass",
+    "category": "odes",
+    "seed": SEED,
+    "tau": TAU,
+    "true_lag_samples": true_lag,
+    "recovered_lag_samples": int(best_lag),
+    "network_r2": float(r2_kan),
+    "edge_shape_r2": {k: float(v[3]) for k, v in edge_checks.items()},
+    "attractor_range_learned": [float(roll.min()), float(roll.max())],
+    "attractor_range_true": [float(series.min()), float(series.max())],
+    "attractor_std_learned": float(roll.std()),
+    "attractor_std_true": float(series.std()),
+    "attractor_range_abs_err": range_err,
+    "attractor_std_rel_err": std_rel_err,
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
 
 # ---------------------------------------------------------------------------
 # 9. Figures

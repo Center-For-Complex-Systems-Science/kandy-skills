@@ -103,12 +103,20 @@ KAN B: width = [3, 3],  base_fun='zero'
 """
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
+from _utils import ensure_outdir, print_check, save_metrics
 
 from kandy import KANDy, CustomLift
 from kandy.plotting import plot_all_edges, plot_loss_curves, use_pub_style
@@ -417,6 +425,51 @@ print(f"[EVAL]    true orbits stay within |z| <= {orbit_radius:.3f} "
 print(f"[EVAL]    per-step RMSE   mean {step_rmse.mean():.3e}   "
       f"final {step_rmse[-1]:.3e}   max {step_rmse.max():.3e}")
 print(f"[EVAL]    max orbit divergence over all seeds/steps: {divergence.max():.3e}")
+
+# ---------------------------------------------------------------------------
+# Verification
+#
+#     Two lifts, two claims.  Model A recovers the Mobius coefficients in the
+#     plane; Model B recovers them on the Riemann sphere, where the pole is not
+#     a special point.  Orbit iteration is the strong test — it compounds the
+#     map many times, so a small per-step bias shows up as divergence, and the
+#     seeds are chosen to stay inside the sampled disc so nothing is measuring
+#     extrapolation.
+# ---------------------------------------------------------------------------
+coef_err_A = float(np.abs(M_hat_A - M_TRUE_A).max())
+coef_err_B = float(np.abs(M_hat_B - M_TRUE_B).max())
+THRESHOLDS = {
+    "coef_abs_err_max": 0.02,
+    "test_rmse_max": 0.02,
+    "orbit_divergence_max": 0.10,
+}
+passed = print_check(
+    coef_err_A <= THRESHOLDS["coef_abs_err_max"]
+    and coef_err_B <= THRESHOLDS["coef_abs_err_max"]
+    and max(float(rmse_A), float(rmse_B)) <= THRESHOLDS["test_rmse_max"]
+    and float(divergence.max()) <= THRESHOLDS["orbit_divergence_max"],
+    "Mobius coefficients recovered in the plane and on the sphere; "
+    "orbits stay on track",
+)
+RESULT_DIR = ensure_outdir("results/MobiusRiemannSphere")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "MobiusRiemannSphere",
+    "category": "geometry",
+    "seed": SEED,
+    "multiplier_k": float(abs(K_MULT)),
+    "coef_abs_err_plane": coef_err_A,
+    "coef_abs_err_sphere": coef_err_B,
+    "test_rmse_plane": float(rmse_A),
+    "test_rmse_sphere": float(rmse_B),
+    "orbit_steps": int(N_STEPS),
+    "orbit_seeds": int(N_ORBITS),
+    "orbit_step_rmse_mean": float(step_rmse.mean()),
+    "orbit_step_rmse_final": float(step_rmse[-1]),
+    "orbit_divergence_max": float(divergence.max()),
+    "orbit_radius": float(orbit_radius),
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
 print(f"[EVAL]    endpoint — true {true_orbits[-1, 0]}, learned "
       f"{pred_orbits[-1, 0]}, fixed point [{P_FIX.real} {P_FIX.imag}]")
 

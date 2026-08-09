@@ -75,13 +75,19 @@ KAN:  N separate models, width = [N-1, 1]
 """
 
 import os
+import sys
 import time
 import io
 import contextlib
+from pathlib import Path
 import numpy as np
 import torch
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-kandy")
+
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
 
 import matplotlib
 
@@ -91,6 +97,7 @@ from scipy.integrate import solve_ivp
 
 from kandy import KANDy, CustomLift
 from kandy.plotting import get_edge_activation, use_pub_style
+from _utils import ensure_outdir, print_check, save_metrics
 
 # ---------------------------------------------------------------------------
 # 0. Reproducibility, the hidden network, and the unknown coupling
@@ -99,6 +106,7 @@ SEED = 7
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 rng = np.random.default_rng(SEED)
+RESULT_DIR = ensure_outdir("results/NetworkReconstruction")
 
 N = 10
 EDGE_PROB = 0.30
@@ -291,8 +299,60 @@ r2_shape = 1.0 - np.sum((ys_c - true_c) ** 2) / np.sum(true_c ** 2)
 print(f"[KAN]  edge ({ei},{ej}) spline vs the true coupling g: "
       f"R^2 = {r2_shape:.5f}")
 print("[KAN]  Neither the wiring nor the coupling function was assumed.")
-check_ok = sep_p and p_hat == 1.0 and r_hat == 1.0 and r2_shape > 0.95
-print(f"[CHECK] {'PASS' if check_ok else 'FAIL'}: pruned topology and coupling function")
+thresholds = {
+    "adjacency_precision": 1.0,
+    "adjacency_recall": 1.0,
+    "coupling_function_r2": 0.95,
+}
+check_ok = (
+    sep_p
+    and p_hat >= thresholds["adjacency_precision"]
+    and r_hat >= thresholds["adjacency_recall"]
+    and r2_shape > thresholds["coupling_function_r2"]
+)
+metrics = {
+    "seed": SEED,
+    "n_oscillators": N,
+    "edge_probability": EDGE_PROB,
+    "n_undirected_edges": n_edges,
+    "n_samples": len(states),
+    "n_fit_samples": N_FIT,
+    "order_parameter": order_parameter(states),
+    "lsq_assuming_sin": {
+        "edge_mean": on.mean(),
+        "edge_std": on.std(),
+        "edge_min": on.min(),
+        "non_edge_max": off.max(),
+        "topology_separated": sep,
+    },
+    "kandy_raw": {
+        "edge_mean": on_k.mean(),
+        "edge_std": on_k.std(),
+        "edge_min": on_k.min(),
+        "non_edge_max": off_k.max(),
+        "non_edge_mean": off_k.mean(),
+        "topology_separated": sep_k,
+        "separation_ratio": on_k.min() / off_k.max(),
+    },
+    "pruned_adjacency": {
+        "threshold": prune_threshold,
+        "largest_gap_low": gap_lo,
+        "largest_gap_high": gap_hi,
+        "precision": p_hat,
+        "recall": r_hat,
+        "f1": f1_hat,
+        "tp": tp_hat,
+        "fp": fp_hat,
+        "fn": fn_hat,
+        "topology_separated": sep_p,
+    },
+    "coupling_function_r2": r2_shape,
+    "thresholds": thresholds,
+    "passed": print_check(
+        check_ok,
+        "pruned topology and coupling function",
+    ),
+}
 
 # ---------------------------------------------------------------------------
 # 3. The identifiability limit — a locked network tells you nothing
@@ -302,6 +362,7 @@ print(f"[CHECK] {'PASS' if check_ok else 'FAIL'}: pruned topology and coupling f
 # ---------------------------------------------------------------------------
 print("\n[SYNC] Same estimator, TRUE coupling basis, two observation windows:")
 sync_rows = []
+sync_metrics = []
 for K, burn, tag in [(4.0, 0.0, "transient included"),
                      (4.0, 18.0, "locked state only ")]:
     S_s, Y_s = simulate(K=K, burn=burn)
@@ -309,88 +370,153 @@ for K, burn, tag in [(4.0, 0.0, "transient included"),
     o_on, o_off, o_sep = separation(W)
     r = order_parameter(S_s)
     sync_rows.append((tag, r, o_on, o_off, o_sep))
+    sync_metrics.append({
+        "tag": tag.strip(),
+        "coupling": K,
+        "burn": burn,
+        "order_parameter": r,
+        "edge_mean": o_on.mean(),
+        "edge_std": o_on.std(),
+        "non_edge_max": o_off.max(),
+        "topology_separated": o_sep,
+    })
     print(f"[SYNC]   {tag}  r={r:.3f}  edges {o_on.mean():.3f} +- "
           f"{o_on.std():.3f} (true {K})  non-edges up to {o_off.max():.4f}  "
           f"separated={o_sep}")
 print("[SYNC] Locked phases are constants: the data never probes how the")
 print("[SYNC] coupling responds, so the network is simply not identifiable.")
 print("[SYNC] Reconstruct from transients or below full synchronisation.")
+metrics["sync_windows"] = sync_metrics
+save_metrics(RESULT_DIR / "metrics.json", metrics)
 
 # ---------------------------------------------------------------------------
-# 4. Figures
+# 4. Figure helpers
+# ---------------------------------------------------------------------------
+
+def plot_adjacency(
+    outdir: Path,
+    W_sin: np.ndarray,
+    amp: np.ndarray,
+    A_hat: np.ndarray,
+    prune_threshold: float,
+) -> None:
+    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+    panels = [
+        (ADJ, "true adjacency"),
+        (np.abs(W_sin), "least squares assuming sin"),
+        (amp, "KANDy edge amplitudes"),
+        (A_hat, f"pruned KANDy adjacency\nthreshold={prune_threshold:.3f}"),
+    ]
+    for ax, (mat, title) in zip(axes, panels):
+        im = ax.imshow(mat, cmap="viridis")
+        ax.set_title(title, fontsize=10)
+        ax.set_xlabel("j")
+        ax.set_ylabel("i")
+        fig.colorbar(im, ax=ax, fraction=0.046)
+    fig.suptitle("Recovering the wiring diagram", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(outdir / "adjacency.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_separation(
+    outdir: Path,
+    W_sin: np.ndarray,
+    amp: np.ndarray,
+    prune_threshold: float,
+) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharey=True)
+    for ax, (weights, title, show_threshold) in zip(
+        axes,
+        [
+            (np.abs(W_sin), "assuming sin(.)", False),
+            (amp, "KANDy, raw phase differences", True),
+        ],
+    ):
+        o_on, o_off, o_sep = separation(weights)
+        ax.hist(o_off, bins=18, color="#1f77b4", alpha=0.75, label="non-edges")
+        ax.hist(o_on, bins=18, color="#d62728", alpha=0.75, label="true edges")
+        if show_threshold:
+            ax.axvline(
+                prune_threshold,
+                color="k",
+                lw=1.1,
+                ls="--",
+                label="prune threshold",
+            )
+        ax.set_xlabel("recovered weight")
+        ax.set_title(f"{title}\nseparated: {o_sep}", fontsize=10)
+        ax.legend(fontsize=8)
+    axes[0].set_ylabel("count")
+    fig.suptitle("A basis error turns into false edges", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(outdir / "separation.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_coupling_function(
+    outdir: Path,
+    xs: np.ndarray,
+    true_c: np.ndarray,
+    ys_c: np.ndarray,
+    r2_shape: float,
+) -> None:
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.plot(
+        xs,
+        true_c,
+        lw=2.6,
+        color="#1f77b4",
+        alpha=0.45,
+        label=r"true $g(d)=\sin(d-\alpha)+0.3\sin 2d$",
+    )
+    ax.plot(xs, ys_c, lw=1.3, color="#d62728", ls="--", label="KAN spline edge")
+    ax.set_xlabel(r"$\theta_j-\theta_i$")
+    ax.set_ylabel("edge output (mean-centred)")
+    ax.set_title(f"Coupling function recovered, $R^2$={r2_shape:.4f}")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(outdir / "coupling_function.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_sync_limit(outdir: Path, sync_rows: list[tuple]) -> None:
+    fig, ax = plt.subplots(figsize=(6.4, 4))
+    xpos = np.arange(len(sync_rows))
+    ax.bar(
+        xpos - 0.18,
+        [row[2].mean() for row in sync_rows],
+        0.36,
+        yerr=[row[2].std() for row in sync_rows],
+        capsize=4,
+        color="#d62728",
+        label="true edges",
+    )
+    ax.bar(
+        xpos + 0.18,
+        [row[3].max() for row in sync_rows],
+        0.36,
+        color="#1f77b4",
+        label="largest non-edge",
+    )
+    ax.axhline(4.0, color="k", ls="--", lw=1.0, label="true coupling K=4")
+    ax.set_xticks(xpos)
+    ax.set_xticklabels([f"{tag}\n$r$={r:.3f}" for tag, r, *_ in sync_rows], fontsize=8)
+    ax.set_ylabel("recovered weight")
+    ax.set_title("A phase-locked network is unidentifiable")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(outdir / "sync_limit.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# 5. Figures
 # ---------------------------------------------------------------------------
 use_pub_style()
-os.makedirs("results/NetworkReconstruction", exist_ok=True)
+plot_adjacency(RESULT_DIR, W_sin, amp, A_hat, prune_threshold)
+plot_separation(RESULT_DIR, W_sin, amp, prune_threshold)
+plot_coupling_function(RESULT_DIR, xs, true_c, ys_c, r2_shape)
+plot_sync_limit(RESULT_DIR, sync_rows)
 
-# 4a. True vs recovered adjacency
-fig, axes = plt.subplots(1, 4, figsize=(16, 4))
-panels = [(ADJ, "true adjacency"),
-          (np.abs(W_sin), "least squares assuming sin"),
-          (amp, "KANDy edge amplitudes"),
-          (A_hat, f"pruned KANDy adjacency\nthreshold={prune_threshold:.3f}")]
-for ax, (M, title) in zip(axes, panels):
-    im = ax.imshow(M, cmap="viridis")
-    ax.set_title(title, fontsize=10)
-    ax.set_xlabel("j"); ax.set_ylabel("i")
-    fig.colorbar(im, ax=ax, fraction=0.046)
-fig.suptitle("Recovering the wiring diagram", fontsize=12)
-fig.tight_layout()
-fig.savefig("results/NetworkReconstruction/adjacency.png", dpi=300,
-            bbox_inches="tight")
-plt.close(fig)
-
-# 4b. Separation of edge vs non-edge weights
-fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharey=True)
-for ax, (W, title) in zip(axes, [(np.abs(W_sin), "assuming sin(.)"),
-                                 (amp, "KANDy, raw phase differences")]):
-    o_on, o_off, o_sep = separation(W)
-    ax.hist(o_off, bins=18, color="#1f77b4", alpha=0.75, label="non-edges")
-    ax.hist(o_on, bins=18, color="#d62728", alpha=0.75, label="true edges")
-    if W is amp:
-        ax.axvline(prune_threshold, color="k", lw=1.1, ls="--",
-                   label="prune threshold")
-    ax.set_xlabel("recovered weight")
-    ax.set_title(f"{title}\nseparated: {o_sep}", fontsize=10)
-    ax.legend(fontsize=8)
-axes[0].set_ylabel("count")
-fig.suptitle("A basis error turns into false edges", fontsize=12)
-fig.tight_layout()
-fig.savefig("results/NetworkReconstruction/separation.png", dpi=300,
-            bbox_inches="tight")
-plt.close(fig)
-
-# 4c. The recovered coupling function
-fig, ax = plt.subplots(figsize=(6, 4))
-ax.plot(xs, true_c, lw=2.6, color="#1f77b4", alpha=0.45,
-        label=r"true $g(d)=\sin(d-\alpha)+0.3\sin 2d$")
-ax.plot(xs, ys_c, lw=1.3, color="#d62728", ls="--", label="KAN spline edge")
-ax.set_xlabel(r"$\theta_j-\theta_i$")
-ax.set_ylabel("edge output (mean-centred)")
-ax.set_title(f"Coupling function recovered, $R^2$={r2_shape:.4f}")
-ax.legend(fontsize=8)
-fig.tight_layout()
-fig.savefig("results/NetworkReconstruction/coupling_function.png", dpi=300,
-            bbox_inches="tight")
-plt.close(fig)
-
-# 4d. The synchronisation limit
-fig, ax = plt.subplots(figsize=(6.4, 4))
-labels = [t for t, *_ in sync_rows]
-xpos = np.arange(len(sync_rows))
-ax.bar(xpos - 0.18, [r[2].mean() for r in sync_rows], 0.36,
-       yerr=[r[2].std() for r in sync_rows], capsize=4,
-       color="#d62728", label="true edges")
-ax.bar(xpos + 0.18, [r[3].max() for r in sync_rows], 0.36,
-       color="#1f77b4", label="largest non-edge")
-ax.axhline(4.0, color="k", ls="--", lw=1.0, label="true coupling K=4")
-ax.set_xticks(xpos)
-ax.set_xticklabels([f"{t}\n$r$={r:.3f}" for t, r, *_ in sync_rows], fontsize=8)
-ax.set_ylabel("recovered weight")
-ax.set_title("A phase-locked network is unidentifiable")
-ax.legend(fontsize=8)
-fig.tight_layout()
-fig.savefig("results/NetworkReconstruction/sync_limit.png", dpi=300,
-            bbox_inches="tight")
-plt.close(fig)
-
-print("\n[FIGS]  Saved results/NetworkReconstruction/")
+print(f"\n[FIGS]  Saved {RESULT_DIR}/")

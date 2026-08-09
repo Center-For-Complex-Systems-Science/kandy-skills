@@ -63,6 +63,8 @@ KAN: width = [4, 5],  base_fun='zero'     (compare: identity lift, [5, 5])
 """
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
@@ -71,12 +73,17 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
 from kandy import KANDy, CustomLift
 from kandy.plotting import (
     plot_all_edges,
     plot_loss_curves,
     use_pub_style,
 )
+from _utils import ensure_outdir, print_check, save_metrics
 
 # ---------------------------------------------------------------------------
 # 0. Reproducibility and parameters
@@ -216,12 +223,14 @@ print(f"[EVAL]  dz/dt R^2 — identity lift: {r2_raw_z:.6f}  "
 #    the right zero set.
 # ---------------------------------------------------------------------------
 print("\n[EVAL]  Grid sweep for the identity lift (dz/dt only):")
+grid_sweep = {}
 for g in (5, 10, 20):
     m = KANDy(lift=CustomLift(fn=lambda S: S, output_dim=5, name="identity_h1"),
               grid=g, k=3, steps=100, seed=SEED, base_fun="zero")
     m.fit(X=X, X_dot=X_dot, val_frac=0.15, test_frac=0.15, lamb=0.0,
           patience=30, verbose=False)
     e = per_component_rmse(m.predict(X), X_dot)[2]
+    grid_sweep[g] = float(e)
     print(f"[EVAL]    grid={g:<3d}  dz/dt RMSE = {e:.6f}")
 print("[EVAL]  -> flat in the grid size: this is the zero-set obstruction, "
       "not under-fitting")
@@ -336,10 +345,62 @@ print("[SYMBOLIC] dz/dt is a sum of univariate terms — no product of two "
       "state variables can appear, whatever the library.")
 
 # ---------------------------------------------------------------------------
+# 5b. Verification
+#
+#     This example is a counterexample, so the check is two-sided and the
+#     NEGATIVE half is the load-bearing one: the identity lift must keep
+#     failing on dz/dt, and must keep failing FLAT in the grid size.  A grid
+#     sweep that started improving would mean the failure was under-fitting
+#     after all, and the whole separability argument would be unsupported.
+# ---------------------------------------------------------------------------
+grid_vals = np.array(list(grid_sweep.values()))
+grid_spread = float((grid_vals.max() - grid_vals.min()) / grid_vals.mean())
+coef_abs_err = float(np.abs(A_eff - A_true).max())
+THRESHOLDS = {
+    "bracket_dzdt_r2_min": 0.999,      # engineered lift recovers the bracket
+    "identity_dzdt_r2_max": 0.10,      # identity lift explains ~none of it
+    "grid_spread_max": 0.10,           # and does not improve with resolution
+    "coef_abs_err_max": 0.02,
+    "formula_r2_min": 0.99,
+    "cond_theta_max": 5.0,
+    "rollout_penalty_min": 5.0,        # identity rollout >=5x worse overall
+}
+rollout_penalty = float(roll_rmse_raw / max(roll_rmse_eng, 1e-12))
+passed = print_check(
+    r2_eng_z >= THRESHOLDS["bracket_dzdt_r2_min"]
+    and r2_raw_z <= THRESHOLDS["identity_dzdt_r2_max"]
+    and grid_spread <= THRESHOLDS["grid_spread_max"]
+    and coef_abs_err <= THRESHOLDS["coef_abs_err_max"]
+    and float(np.min(r2)) >= THRESHOLDS["formula_r2_min"]
+    and cond <= THRESHOLDS["cond_theta_max"]
+    and rollout_penalty >= THRESHOLDS["rollout_penalty_min"],
+    "Heisenberg bracket recovered; identity lift fails flat in grid size",
+)
+RESULT_DIR = ensure_outdir(RESULTS_DIR)
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "Heisenberg",
+    "category": "geometry",
+    "seed": SEED,
+    "n_train": N_SAMPLES,
+    "sampling": "uniform box + true RHS (oracle derivatives)",
+    "cond_theta": float(cond),
+    "dzdt_r2_bracket_lift": float(r2_eng_z),
+    "dzdt_r2_identity_lift": float(r2_raw_z),
+    "grid_sweep_dzdt_rmse": {str(k): v for k, v in grid_sweep.items()},
+    "grid_spread_relative": grid_spread,
+    "coef_abs_err": coef_abs_err,
+    "formula_r2": np.asarray(r2).tolist(),
+    "rollout_rmse_bracket": float(roll_rmse_eng),
+    "rollout_rmse_identity": float(roll_rmse_raw),
+    "rollout_penalty": rollout_penalty,
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
+
+# ---------------------------------------------------------------------------
 # 6. Figures
 # ---------------------------------------------------------------------------
 use_pub_style()
-os.makedirs(RESULTS_DIR, exist_ok=True)
 
 C_TRUE, C_ENG, C_RAW = "#1f77b4", "#2ca02c", "#d62728"
 

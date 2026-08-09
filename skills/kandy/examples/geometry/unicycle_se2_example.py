@@ -56,6 +56,8 @@ KAN:  width = [3, 5],  base_fun='zero'
 """
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
@@ -64,6 +66,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
+from _utils import ensure_outdir, print_check, save_metrics
 from kandy import KANDy, CustomLift
 from kandy.plotting import (
     plot_all_edges,
@@ -293,11 +300,65 @@ print("[SYMBOLIC] True:  dx/dt = 1.0*v_cos_theta,  dy/dt = 1.0*v_sin_theta,")
 print("[SYMBOLIC]        dtheta/dt = 1.0*omega,    dv/dt = domega/dt = 0")
 
 # ---------------------------------------------------------------------------
+# 5b. Verification
+#
+#     Final pose error is gated per initial condition rather than in aggregate:
+#     the three rollouts span a tight arc, a near-straight run and a reversed
+#     turn, and averaging would let a good straight-line run hide a bad arc.
+# ---------------------------------------------------------------------------
+pose_errors = {
+    label: float(np.linalg.norm(p[-1, :2] - s[-1, :2]))
+    for label, s, p, _ in rollout_rows
+}
+heading_errors = {
+    label: float(abs(p[-1, 2] - s[-1, 2]))
+    for label, s, p, _ in rollout_rows
+}
+coef_abs_err = float(np.abs(A_eff - A_true).max())
+lift_advantage = float(rmse_deriv_id / rmse_deriv)
+THRESHOLDS = {
+    "coef_abs_err_max": 0.01,
+    "identity_lift_penalty_min": 10.0,   # v*cos(theta) is out of separable reach
+    "formula_r2_min": 0.99,
+    "final_pose_err_max": 0.05,          # metres, worst of the three arcs
+    "final_heading_err_max": 0.05,       # radians
+    "cond_lift_max": 10.0,
+}
+passed = print_check(
+    coef_abs_err <= THRESHOLDS["coef_abs_err_max"]
+    and lift_advantage >= THRESHOLDS["identity_lift_penalty_min"]
+    and float(np.min(r2)) >= THRESHOLDS["formula_r2_min"]
+    and max(pose_errors.values()) <= THRESHOLDS["final_pose_err_max"]
+    and max(heading_errors.values()) <= THRESHOLDS["final_heading_err_max"]
+    and cond_lift <= THRESHOLDS["cond_lift_max"],
+    "Unicycle SE(2): v*cos(theta) recovered, arcs tracked to final pose",
+)
+RESULT_DIR = ensure_outdir("results/UnicycleSE2")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "UnicycleSE2",
+    "category": "geometry",
+    "seed": SEED,
+    "sampling": "uniform box + true RHS (oracle derivatives)",
+    "cond_lift": float(cond_lift),
+    "cond_identity": float(cond_raw),
+    "coef_abs_err": coef_abs_err,
+    "rmse_se2_lift": float(rmse_deriv),
+    "rmse_identity_lift": float(rmse_deriv_id),
+    "identity_lift_penalty": lift_advantage,
+    "network_r2_se2": per_eq_r2(X_dot, pred).tolist(),
+    "network_r2_identity": per_eq_r2(X_dot, pred_id).tolist(),
+    "formula_r2": np.asarray(r2).tolist(),
+    "final_pose_err": pose_errors,
+    "final_heading_err": heading_errors,
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
+
+# ---------------------------------------------------------------------------
 # 6. Figures
 # ---------------------------------------------------------------------------
 use_pub_style()
-OUT = "results/UnicycleSE2"
-os.makedirs(OUT, exist_ok=True)
+OUT = str(ensure_outdir("results/UnicycleSE2"))
 
 # 6a. xy-plane paths — true vs SE(2) lift vs identity lift
 fig, axes = plt.subplots(1, len(rollout_rows), figsize=(4.2 * len(rollout_rows), 4.0))

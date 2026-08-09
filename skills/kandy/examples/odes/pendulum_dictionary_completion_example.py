@@ -45,6 +45,8 @@ KAN:  width = [2, 2],  base_fun='zero'
 
 import copy
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
@@ -53,6 +55,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
 from kandy import KANDy, CustomLift
 from kandy.plotting import (
     get_edge_activation,
@@ -60,6 +66,7 @@ from kandy.plotting import (
     plot_loss_curves,
     use_pub_style,
 )
+from _utils import ensure_outdir, print_check, save_metrics
 
 # ---------------------------------------------------------------------------
 # 0. Reproducibility and parameters
@@ -187,10 +194,54 @@ print("[SYMBOLIC] The polynomial library cannot name the sine and drops the "
       "naming failed, learning did not.")
 
 # ---------------------------------------------------------------------------
+# 6b. Verification
+#
+#     The check encodes the LESSON, not just accuracy: the trig library must
+#     succeed AND the polynomial library must fail, on the same trained
+#     network whose own R^2 is ~1.  A run where both libraries scored well
+#     would mean the example no longer demonstrates dictionary completion.
+# ---------------------------------------------------------------------------
+trig_r2 = np.asarray(results["trig       ['x','sin','0']"][1], dtype=float)
+poly_r2 = np.asarray(results["polynomial ['x','x^2','x^3','0']"][1], dtype=float)
+
+THRESHOLDS = {
+    "network_r2_min": 0.999,      # learning succeeds with no dictionary
+    "edge_sine_r2_min": 0.999,    # the spline edge IS a sine
+    "edge_coef_abs_err_max": 0.05,   # and its amplitude is -(g/L)
+    "rollout_rmse_max": 0.05,
+    "trig_formula_r2_min": 0.99,     # naming succeeds with 'sin' available
+    "poly_domega_r2_max": 0.90,      # and fails without it
+}
+passed = print_check(
+    min(raw_r2) >= THRESHOLDS["network_r2_min"]
+    and edge_r2 >= THRESHOLDS["edge_sine_r2_min"]
+    and abs(coef[0] - (-G_OVER_L)) <= THRESHOLDS["edge_coef_abs_err_max"]
+    and rmse <= THRESHOLDS["rollout_rmse_max"]
+    and trig_r2.min() >= THRESHOLDS["trig_formula_r2_min"]
+    and poly_r2[1] <= THRESHOLDS["poly_domega_r2_max"],
+    "pendulum: sine learned without a dictionary, named only with one",
+)
+RESULT_DIR = ensure_outdir("results/PendulumDictionary")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "PendulumDictionary",
+    "category": "odes",
+    "seed": SEED,
+    "n_train": N_SAMPLES,
+    "network_r2": [float(v) for v in raw_r2],
+    "edge_sine_r2": float(edge_r2),
+    "edge_sine_coefficient": float(coef[0]),
+    "edge_coef_true": -G_OVER_L,
+    "rollout_rmse": float(rmse),
+    "trig_formula_r2": trig_r2.tolist(),
+    "poly_formula_r2": poly_r2.tolist(),
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
+
+# ---------------------------------------------------------------------------
 # 7. Figures
 # ---------------------------------------------------------------------------
 use_pub_style()
-os.makedirs("results/PendulumDictionary", exist_ok=True)
 
 # 7a. The learned edge vs the true sine — the heart of the example
 order = np.argsort(edge_x_plot)

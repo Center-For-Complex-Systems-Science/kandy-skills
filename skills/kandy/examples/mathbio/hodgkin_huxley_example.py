@@ -75,6 +75,8 @@ KAN:  width = [6, 1],  base_fun='zero'
 """
 
 import os
+import sys
+from pathlib import Path
 import time
 import copy
 import numpy as np
@@ -84,6 +86,12 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
+
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
+from _utils import ensure_outdir, print_check, save_metrics
 
 from kandy import KANDy, CustomLift
 from kandy.plotting import plot_all_edges, plot_loss_curves, use_pub_style
@@ -308,6 +316,65 @@ print("[GATING] Supplying the PRODUCTS makes it exactly linear.  Without the")
 print("[GATING] rate functions in hand, a polynomial-in-V times m lift gets")
 print("[GATING] close numerically, but its coefficients are a fit to alpha_m,")
 print("[GATING] not interpretable rate constants.")
+
+# ---------------------------------------------------------------------------
+# 6b. Verification
+#
+#     The recovered CONSTANTS are the point of this example — not R^2.  The
+#     conductances and reversal potentials are read straight off the edges and
+#     compared to the biophysics, with gL and EL held to a looser bar because
+#     the leak is the smallest current in the balance and the data constrains
+#     it least.
+#
+#     The gating grid scan is the second, negative assertion: refining the
+#     spline 8x must NOT move R^2.  That plateau is the signature of a missing
+#     lift term, and the oracle lift must then jump clear of it — if the scan
+#     ever started improving, the diagnostic would no longer be diagnostic.
+# ---------------------------------------------------------------------------
+conductance_rel_err = float(max(abs(gna_r - G_NA) / abs(G_NA),
+                                abs(gk_r - G_K) / abs(G_K)))
+potential_rel_err = float(max(abs(ena_r - E_NA) / abs(E_NA),
+                              abs(ek_r - E_K) / abs(E_K)))
+leak_rel_err = float(max(abs(gl_r - G_L) / abs(G_L),
+                         abs(el_r - E_L) / abs(E_L)))
+THRESHOLDS = {
+    "voltage_r2_min": 0.999,
+    "conductance_rel_err_max": 0.05,    # gNa, gK
+    "potential_rel_err_max": 0.05,      # ENa, EK
+    "leak_rel_err_max": 0.30,           # gL, EL: smallest current, loosest
+    "gating_grid_spread_max": 0.01,     # plateau => missing lift term
+    "oracle_lift_r2_min": 0.999,        # supplying the products fixes it
+}
+passed = print_check(
+    float(r2_box) >= THRESHOLDS["voltage_r2_min"]
+    and conductance_rel_err <= THRESHOLDS["conductance_rel_err_max"]
+    and potential_rel_err <= THRESHOLDS["potential_rel_err_max"]
+    and leak_rel_err <= THRESHOLDS["leak_rel_err_max"]
+    and spread <= THRESHOLDS["gating_grid_spread_max"]
+    and r2_oracle >= THRESHOLDS["oracle_lift_r2_min"],
+    "Hodgkin-Huxley constants recovered; gating plateau still flat",
+)
+RESULT_DIR = ensure_outdir("results/HodgkinHuxley")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "HodgkinHuxley",
+    "category": "mathbio",
+    "seed": SEED,
+    "voltage_r2_box": float(r2_box),
+    "voltage_r2_trajectory": float(results["trajectory"][1]),
+    "constants_true": {"gNa": G_NA, "gK": G_K, "gL": G_L,
+                       "ENa": E_NA, "EK": E_K, "EL": E_L},
+    "constants_recovered": {"gNa": float(gna_r), "gK": float(gk_r),
+                            "gL": float(gl_r), "ENa": float(ena_r),
+                            "EK": float(ek_r), "EL": float(el_r)},
+    "conductance_rel_err": conductance_rel_err,
+    "potential_rel_err": potential_rel_err,
+    "leak_rel_err": leak_rel_err,
+    "gating_grid_scan": [[int(g), float(r)] for g, r in grid_scan],
+    "gating_grid_spread": float(spread),
+    "oracle_lift_r2": float(r2_oracle),
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
 
 # ---------------------------------------------------------------------------
 # 7. Figures

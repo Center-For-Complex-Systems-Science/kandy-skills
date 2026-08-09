@@ -19,6 +19,8 @@ Two ingredients are required:
 """
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import sympy as sp
@@ -27,14 +29,18 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
 from kandy import KANDy, CustomLift
+from _utils import ensure_outdir, print_check, save_metrics
 
 SEED = 42
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 
-OUTDIR = "results/SinX"
-os.makedirs(OUTDIR, exist_ok=True)
+OUTDIR = str(ensure_outdir("results/SinX"))
 
 DOMAIN = (-6.0, 6.0)
 N = 4000
@@ -101,6 +107,47 @@ def formula_with_lib(model, var_names, lib):
 
 f = formula_with_lib(model, ["x_a", "x_b"], lib=["x", "sin"])[0]
 print(f"  auto_symbolic (lib=['x','sin']):  x_dot = {f}")
+
+# --- verification ----------------------------------------------------------
+# The whole point is that the sine is NAMED, so the check is symbolic, not just
+# numeric: the extracted expression must literally contain a sin() term, the
+# sine must be localised in one channel, and evaluating the formula must
+# reproduce x + sin(x).
+names_sine = bool(f.has(sp.sin))
+xa, xb = sp.Symbol("x_a"), sp.Symbol("x_b")
+f_num = sp.lambdify((xa, xb), f, "numpy")
+pred_formula = np.asarray(f_num(xg, xg), dtype=float)
+formula_r2 = float(
+    1.0 - np.sum((true_dot - pred_formula) ** 2)
+    / np.sum((true_dot - true_dot.mean()) ** 2)
+)
+print(f"  formula contains sin(): {names_sine}   formula R^2 = {formula_r2:.6f}")
+
+THRESHOLDS = {
+    "sin_localisation_min": 0.90,   # sine confined to the sin-based channel
+    "formula_r2_min": 0.99,
+    "must_name_sine": True,
+}
+passed = print_check(
+    names_sine
+    and sin_a >= THRESHOLDS["sin_localisation_min"]
+    and formula_r2 >= THRESHOLDS["formula_r2_min"],
+    "auto_symbolic emits a literal sin for x_dot = x + sin(x)",
+)
+save_metrics(Path(OUTDIR) / "metrics.json", {
+    "task": "SinX",
+    "category": "odes",
+    "seed": SEED,
+    "n_train": N,
+    "sin_localisation": float(sin_a),
+    "formula": str(f),
+    "formula_names_sine": names_sine,
+    "formula_r2": formula_r2,
+    "channel_a_coefs": {"x": float(cA[0]), "sin": float(cA[1])},
+    "channel_b_coefs": {"x": float(cB[0]), "sin": float(cB[1])},
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
 
 # --- figure ----------------------------------------------------------------
 fig, ax = plt.subplots(figsize=(6.5, 4.5))

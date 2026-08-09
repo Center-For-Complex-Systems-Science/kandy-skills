@@ -66,12 +66,20 @@ skills/kandy/
 │   ├── numerics.md       # finite-volume PDE data generation
 │   └── api.md            # full public API reference
 └── examples/             # complete, runnable scripts, grouped by fit recipe
-    ├── odes/             # continuous ODEs + delay DEs (Lorenz, Van der Pol, Mackey–Glass, …)
+    ├── odes/             # continuous ODEs + delay DEs (Lorenz, Hopf cross-term
+                          #   and quadratic-obstruction demos, Van der Pol,
+                          #   Mackey–Glass, …)
     ├── maps/             # discrete maps (Hénon, Ikeda)
-    ├── oscillators/      # coupled phase oscillators (Kuramoto, network reconstruction, …)
+    ├── oscillators/      # coupled phase oscillators (Kuramoto, network reconstruction,
+                          #   Kuramoto–Sakaguchi and slow-variable seizure fits
+                          #   to a measured recording, …)
+    ├── epilepsy/         # measured seizure recording: cross-frequency envelope
+                          #   models, diagnostics, and abstract interventions
     ├── pdes/             # 1D PDEs (Burgers, Kuramoto–Sivashinsky)
     ├── fluids/           # fluid dynamics (vortex shedding, 2D turbulence, 3D Navier–Stokes)
-    ├── mathbio/          # mathematical biology (SIR, Lotka–Volterra, Epileptor, …)
+    ├── plasma/           # MHD (Orszag–Tang, Brio–Wu shock tube, 2D MHD turbulence)
+    ├── mathbio/          # mathematical biology (SIR, Lotka–Volterra, Epileptor,
+                          #   Hodgkin–Huxley, fMRI/DCM, …)
     └── geometry/         # engineered lifts on manifolds and Lie groups
                           #   (Hopf, trefoil, Euler top, Heisenberg, SE(2), …)
 ```
@@ -85,6 +93,27 @@ pip install kandy
 ```
 
 Python 3.11–3.13 · PyTorch ≥ 2.0 · PyKAN ≥ 0.2.0 · SciPy ≥ 1.10 · SymPy ≥ 1.12
+
+## Citation
+
+If you use KANDy in your research, please cite the paper:
+
+> K. Slote, J. Fish, and E. Bollt. *KANDy: Kolmogorov-Arnold Networks and
+> Dynamical System Discovery*. arXiv:2602.20413, 2026.
+> <https://arxiv.org/abs/2602.20413>
+
+```bibtex
+@misc{slote2026kandy,
+  title         = {{KANDy}: {K}olmogorov-{A}rnold Networks and Dynamical System Discovery},
+  author        = {Slote, Kevin and Fish, Jeremie and Bollt, Erik},
+  year          = {2026},
+  eprint        = {2602.20413},
+  archivePrefix = {arXiv},
+  primaryClass  = {math.DS},
+  doi           = {10.48550/arXiv.2602.20413},
+  url           = {https://arxiv.org/abs/2602.20413}
+}
+```
 
 ## License
 

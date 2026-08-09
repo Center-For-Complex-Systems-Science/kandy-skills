@@ -73,6 +73,8 @@ KAN:  width = [5, 3],  base_fun='zero'
 """
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
@@ -80,6 +82,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
+from _utils import ensure_outdir, print_check, save_metrics
 from kandy import KANDy, CustomLift
 from kandy.plotting import plot_all_edges, plot_loss_curves, use_pub_style
 
@@ -419,3 +426,51 @@ print(f"[SYMBOLIC] Formula R^2 per component: {np.round(r2, 6)}")
 print(f"[SYMBOLIC] True:  X = {R_MAJOR}*cos_t1 + {R_MINOR}*cos_t2_cos_t1")
 print(f"[SYMBOLIC]        Y = {R_MAJOR}*sin_t1 + {R_MINOR}*cos_t2_sin_t1")
 print(f"[SYMBOLIC]        Z = {R_MINOR}*sin_t2")
+
+# ---------------------------------------------------------------------------
+# Verification
+#
+#     The load-bearing assertion is the STRUCTURAL FLOOR.  Model A (harmonic
+#     lift) cannot represent cos(t2)*cos(t1), so its X and Y error must sit near
+#     r/2 in RMS — and it must still get Z right, because Z = r*sin(t2) needs no
+#     product at all.  That per-component split is the whole demonstration: a
+#     model that failed everywhere would be a bug, not the separability
+#     obstruction.  Both winding numbers are checked so the rational (closed
+#     orbit) and irrational (dense line) cases are covered.
+# ---------------------------------------------------------------------------
+coef_abs_err = float(np.abs(A_eff - A_TRUE).max())
+floor = R_MINOR / 2
+THRESHOLDS = {
+    "engineered_rmse_max": 0.02,
+    "harmonic_xy_rmse_min": 0.5 * floor,   # Model A must stay near its floor
+    "harmonic_z_rmse_max": 0.02,           # but Z needs no cross-term
+    "coef_abs_err_max": 0.01,
+    "formula_r2_min": 0.99,
+    "orbit_rmse_max": 0.05,
+}
+passed = print_check(
+    float(rmse_eng.max()) <= THRESHOLDS["engineered_rmse_max"]
+    and float(min(rmse_harm[0], rmse_harm[1])) >= THRESHOLDS["harmonic_xy_rmse_min"]
+    and float(rmse_harm[2]) <= THRESHOLDS["harmonic_z_rmse_max"]
+    and coef_abs_err <= THRESHOLDS["coef_abs_err_max"]
+    and float(np.min(r2)) >= THRESHOLDS["formula_r2_min"]
+    and max(float(rmse_rat), float(rmse_irr)) <= THRESHOLDS["orbit_rmse_max"],
+    "Torus embedding recovered; harmonic lift pinned at its structural floor",
+)
+RESULT_DIR = ensure_outdir(RESULTS_DIR)
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "TorusWinding",
+    "category": "geometry",
+    "seed": SEED,
+    "R_major": R_MAJOR,
+    "r_minor": R_MINOR,
+    "structural_floor_r_over_2": float(floor),
+    "rmse_harmonic_lift": [float(v) for v in rmse_harm],
+    "rmse_engineered_lift": [float(v) for v in rmse_eng],
+    "coef_abs_err": coef_abs_err,
+    "formula_r2": np.asarray(r2).tolist(),
+    "rmse_rational_orbit": float(rmse_rat),
+    "rmse_irrational_orbit": float(rmse_irr),
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})

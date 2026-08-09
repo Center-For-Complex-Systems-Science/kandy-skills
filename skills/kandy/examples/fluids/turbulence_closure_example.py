@@ -78,6 +78,8 @@ KAN:  width = [13, 1],  base_fun='zero'
 """
 
 import os
+import sys
+from pathlib import Path
 import time
 import numpy as np
 import torch
@@ -85,6 +87,12 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
+from _utils import ensure_outdir, print_check, save_metrics
 
 from kandy import KANDy, CustomLift
 from kandy.plotting import plot_loss_curves, use_pub_style
@@ -332,6 +340,66 @@ print(f"[LIMIT]  than {100 * max(sharp['r2_ols'], sharp['r2_kan']):.0f}% of it. 
       "Roughly 80-90% of the exact subgrid")
 print("[LIMIT]  term is not a local function of these resolved features.")
 print("[LIMIT]  This is the classical non-closability of LES, measured.")
+
+# ---------------------------------------------------------------------------
+# 5b. Verification
+#
+#     This example's result is a NEGATIVE one, so the check has to protect it
+#     from both sides.  Under a Gaussian filter the subgrid term is closable and
+#     the Clark coefficient must come back at the analytic Delta^2/12 — that is
+#     the positive control proving the pipeline works.  Under a sharp spectral
+#     filter — the genuine LES case — no method may explain more than a modest
+#     fraction of tau.  If the sharp-filter R^2 ever climbed, this script would
+#     be claiming to have solved LES closure, and the far likelier explanation
+#     would be a leak between the filter used for the features and the one used
+#     for the target.  So the ceiling is asserted, not just reported.
+# ---------------------------------------------------------------------------
+clark_ratio_err = float(np.abs(coeffs / gauss["c_theory"] - 1.0).max())
+sharp_best_r2 = float(max(sharp["r2_ols"], sharp["r2_kan"]))
+kan_generalisation_gap = float(gauss["r2_kan_train"] - gauss["r2_kan"])
+THRESHOLDS = {
+    "clark_ratio_abs_err_max": 0.25,     # recovered coeff vs analytic Delta^2/12
+    "gaussian_kan_r2_min": 0.80,         # smooth filter: closable
+    "sharp_best_r2_max": 0.60,           # sharp filter: must NOT close
+    "sharp_tau_rel_min": 0.10,           # tau is not negligible
+    "kan_generalisation_gap_max": 0.10,
+}
+passed = print_check(
+    clark_ratio_err <= THRESHOLDS["clark_ratio_abs_err_max"]
+    and gauss["r2_kan"] >= THRESHOLDS["gaussian_kan_r2_min"]
+    and sharp_best_r2 <= THRESHOLDS["sharp_best_r2_max"]
+    and sharp["tau_rel"] >= THRESHOLDS["sharp_tau_rel_min"]
+    and kan_generalisation_gap <= THRESHOLDS["kan_generalisation_gap_max"],
+    "LES closure: Delta^2/12 recovered under a Gaussian filter, "
+    "non-closable under a sharp one",
+)
+RESULT_DIR = ensure_outdir("results/TurbulenceClosure")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "TurbulenceClosure",
+    "category": "fluids",
+    "seed": SEED,
+    "sampling": "pseudo-spectral DNS, filtered",
+    "gaussian_filter": {
+        "clark_coefficients": np.asarray(coeffs).tolist(),
+        "clark_theory_delta2_over_12": float(gauss["c_theory"]),
+        "clark_ratio_to_theory": np.asarray(coeffs / gauss["c_theory"]).tolist(),
+        "clark_ratio_abs_err": clark_ratio_err,
+        "r2_clark": float(gauss["r2_clark"]),
+        "r2_ols": float(gauss["r2_ols"]),
+        "r2_kan_heldout": float(gauss["r2_kan"]),
+        "r2_kan_train": float(gauss["r2_kan_train"]),
+        "tau_rel": float(gauss["tau_rel"]),
+    },
+    "sharp_filter": {
+        "r2_ols": float(sharp["r2_ols"]),
+        "r2_kan_heldout": float(sharp["r2_kan"]),
+        "best_r2": sharp_best_r2,
+        "tau_rel": float(sharp["tau_rel"]),
+    },
+    "kan_generalisation_gap": kan_generalisation_gap,
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
 
 # ---------------------------------------------------------------------------
 # 6. How the closability degrades with filter width (least squares only, cheap)

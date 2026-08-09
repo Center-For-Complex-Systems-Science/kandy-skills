@@ -56,6 +56,8 @@ KAN:  width = [3, 3],  base_fun='zero'
 """
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
@@ -63,6 +65,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
+
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
 
 from kandy import KANDy, CustomLift
 from kandy.plotting import (
@@ -72,6 +78,7 @@ from kandy.plotting import (
     plot_loss_curves,
     use_pub_style,
 )
+from _utils import ensure_outdir, print_check, save_metrics
 
 # ---------------------------------------------------------------------------
 # 0. Reproducibility and parameters
@@ -284,11 +291,66 @@ print(f"[SYMBOLIC]        dW2/dt = {C2:+.6f}*W3*W1")
 print(f"[SYMBOLIC]        dW3/dt = {C3:+.6f}*W1*W2")
 
 # ---------------------------------------------------------------------------
+# 5b. Verification
+#
+#     Four independent things must hold, and the conserved-quantity drift is
+#     the interesting one: nothing in training mentioned energy or ||L||^2, so
+#     their drift along the LEARNED rollout is a label-free correctness check
+#     that pointwise error cannot provide.  The identity-lift comparison is
+#     gated too — it must stay far worse, since a run where it caught up would
+#     mean the separability obstruction is no longer being demonstrated.
+# ---------------------------------------------------------------------------
+coef_abs_err = float(np.abs(recovered - TRUE_COEFFS).max())
+lift_advantage = float(rmse_id / rmse_lift)
+THRESHOLDS = {
+    "coef_abs_err_max": 0.01,
+    "off_diagonal_slope_max": 0.02,      # non-physical couplings stay at zero
+    "identity_lift_penalty_min": 10.0,   # identity lift must remain >=10x worse
+    "energy_drift_max": 1e-3,            # label-free: never seen in training
+    "momentum_drift_max": 1e-3,
+    "formula_r2_min": 0.99,
+    "cond_theta_max": 100.0,
+}
+passed = print_check(
+    coef_abs_err <= THRESHOLDS["coef_abs_err_max"]
+    and off_diag <= THRESHOLDS["off_diagonal_slope_max"]
+    and lift_advantage >= THRESHOLDS["identity_lift_penalty_min"]
+    and drift(E_pred) <= THRESHOLDS["energy_drift_max"]
+    and drift(L_pred) <= THRESHOLDS["momentum_drift_max"]
+    and float(np.min(r2)) >= THRESHOLDS["formula_r2_min"]
+    and cond <= THRESHOLDS["cond_theta_max"],
+    "Euler top coefficients, zero off-diagonals and conserved quantities",
+)
+RESULT_DIR = ensure_outdir("results/EulerTop")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "EulerTop",
+    "category": "geometry",
+    "seed": SEED,
+    "n_train": N_SAMPLES,
+    "sampling": "uniform box + true RHS (oracle derivatives)",
+    "inertia": [I1, I2, I3],
+    "cond_theta": float(cond),
+    "true_coefficients": TRUE_COEFFS.tolist(),
+    "recovered_coefficients": recovered.tolist(),
+    "coef_abs_err": coef_abs_err,
+    "off_diagonal_slope_max": float(off_diag),
+    "network_r2": [float(v) for v in raw_r2],
+    "rmse_crossproduct_lift": float(rmse_lift),
+    "rmse_identity_lift": float(rmse_id),
+    "identity_lift_penalty": lift_advantage,
+    "energy_drift": float(drift(E_pred)),
+    "momentum_drift": float(drift(L_pred)),
+    "rollout_rmse": float(rmse),
+    "formula_r2": np.asarray(r2).tolist(),
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
+
+# ---------------------------------------------------------------------------
 # 6. Figures
 # ---------------------------------------------------------------------------
 use_pub_style()
-OUT = "results/EulerTop"
-os.makedirs(OUT, exist_ok=True)
+OUT = str(ensure_outdir("results/EulerTop"))
 
 # 6a. 3D phase space — polhodes on the momentum sphere, true vs KANDy
 fig = plt.figure(figsize=(6, 5.5))

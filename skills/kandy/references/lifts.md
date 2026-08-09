@@ -24,6 +24,13 @@ univariate function, so `x²`, `x³`, `sin x`, `tanh x` need not appear in φ �
 the edge learns them from data with no dictionary
 (`odes/pendulum_dictionary_completion_example.py` recovers `sin θ` this way).
 
+The edge is not limited to shapes you could have named in advance, and it is
+worth reading its shape back afterwards. In `mathbio/fmri_dcm_example.py` the
+Balloon–Windkessel term `v^(1/α)` is left on an edge, and curve-fitting that
+one edge to `c·v^p + d` returns the Grubb exponent as `α = 1/p` to 0.01% — a
+*fractional* power nobody supplied. Same recipe as naming the univariate factor
+in `mathbio/holling_mult_node_example.py`.
+
 **2. Lift coordinates must be functionally independent of one another.**
 
 Adding `x²` alongside `x` is not merely redundant, it is harmful. Because an

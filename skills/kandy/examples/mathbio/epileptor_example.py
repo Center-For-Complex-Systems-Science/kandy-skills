@@ -92,6 +92,8 @@ KAN:  width = [12, 5],  base_fun='zero'
 """
 
 import os
+import sys
+from pathlib import Path
 import time
 import copy
 import numpy as np
@@ -102,6 +104,12 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
+
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
+from _utils import ensure_outdir, print_check, save_metrics
 
 from kandy import KANDy, CustomLift
 from kandy.plotting import plot_all_edges, plot_loss_curves, use_pub_style
@@ -298,6 +306,56 @@ print(f"[EVAL]  x1 range: KANDy [{roll[:,0].min():.3f}, {roll[:,0].max():.3f}]  
       f"true [{ref[:,0].min():.3f}, {ref[:,0].max():.3f}]")
 print(f"[EVAL]  max |z_KANDy - z_true| over the run: {z_err:.5f}  "
       "(the slow seizure clock is tracked)")
+
+# ---------------------------------------------------------------------------
+# 6b. Verification
+#
+#     The gated contrast is naive-vs-scaled on dz/dt.  The loss is an unweighted
+#     MSE across equations, so the slow permittivity variable — whose derivative
+#     is orders of magnitude smaller than the fast subsystem's — contributes
+#     almost nothing and is simply not fitted.  Both halves are asserted: the
+#     naive fit must still be poor on dz/dt, and per-equation target scaling
+#     must still rescue it.  If the naive fit ever came out fine, the stiffness
+#     lesson would no longer be demonstrated.
+#
+#     The rollout is judged on SEIZURE STRUCTURE — spike count and the slow z
+#     clock — not pointwise error, because the fast subsystem is oscillatory and
+#     decorrelates in phase while the seizure timing stays correct.
+# ---------------------------------------------------------------------------
+THRESHOLDS = {
+    "naive_dzdt_r2_max": 0.99,      # the slow equation is invisible to the loss
+    "scaled_dzdt_r2_min": 0.999,    # per-equation scaling rescues it
+    "scaled_r2_min": 0.99,
+    "spike_count_abs_err_max": 2,
+    "z_abs_err_max": 0.05,
+}
+passed = print_check(
+    float(r2_naive[2]) <= THRESHOLDS["naive_dzdt_r2_max"]
+    and float(r2_scaled[2]) >= THRESHOLDS["scaled_dzdt_r2_min"]
+    and float(np.min(r2_scaled)) >= THRESHOLDS["scaled_r2_min"]
+    and abs(spikes_roll - spikes_ref) <= THRESHOLDS["spike_count_abs_err_max"]
+    and float(z_err) <= THRESHOLDS["z_abs_err_max"],
+    "Epileptor: target scaling rescues the slow seizure clock",
+)
+RESULT_DIR = ensure_outdir("results/Epileptor")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "Epileptor",
+    "category": "mathbio",
+    "seed": SEED,
+    "sampling": "box samples over the observed state ranges",
+    "x0_excitability": X0,
+    "tau0": TAU0,
+    "r2_naive": [float(v) for v in r2_naive],
+    "r2_scaled": [float(v) for v in r2_scaled],
+    "dzdt_r2_naive": float(r2_naive[2]),
+    "dzdt_r2_scaled": float(r2_scaled[2]),
+    "target_scale_per_equation": [float(v) for v in np.asarray(scale).ravel()],
+    "spikes_rollout": int(spikes_roll),
+    "spikes_true": int(spikes_ref),
+    "z_abs_err_max": float(z_err),
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
 
 theta_t = torch.tensor(Theta[:2048], dtype=torch.float32)
 model_for_formula = copy.deepcopy(model)

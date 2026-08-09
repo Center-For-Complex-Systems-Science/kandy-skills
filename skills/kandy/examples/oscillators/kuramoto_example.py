@@ -23,8 +23,14 @@ symbolic extraction step to return arbitrary mixtures of equivalent terms.
 """
 
 import os
+import sys
+from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-kandy")
+
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
 
 import numpy as np
 import torch
@@ -37,6 +43,7 @@ from scipy.integrate import solve_ivp
 
 from kandy import KANDy, CustomLift
 from kandy.plotting import plot_loss_curves, use_pub_style
+from _utils import ensure_outdir, print_check, save_metrics, wrap_pi
 
 # ---------------------------------------------------------------------------
 # 0. Reproducibility / parameters
@@ -55,6 +62,7 @@ DT_SIM = 0.05
 
 rng = np.random.default_rng(SEED)
 OMEGA = rng.uniform(-1.0, 1.0, size=N)
+RESULT_DIR = ensure_outdir("results/Kuramoto")
 
 # Unordered phase pairs. s_ij = sin(theta_j - theta_i), i < j.
 PAIR_FEATURES = [(i, j) for i in range(N) for j in range(i + 1, N)]
@@ -183,11 +191,6 @@ model.fit(
 # 4. Rollout validation -- before any symbolic/linear reporting
 # ---------------------------------------------------------------------------
 
-def wrap_pi(x: np.ndarray) -> np.ndarray:
-    """Wrap phase differences to (-pi, pi]."""
-    return (x + np.pi) % (2 * np.pi) - np.pi
-
-
 print(f"\n[ROLLOUT] Rolling out {T_EVAL} steps ...", flush=True)
 pred = model.rollout(THETA_TRUE[0], T=T_EVAL, dt=DT_SIM, integrator="rk4")
 
@@ -258,97 +261,149 @@ for i, formula in enumerate(formulas):
     print(f"    [TRUE] = {' '.join(true_terms)}", flush=True)
 print(flush=True)
 
+thresholds = {
+    "rmse_theta": 1e-2,
+    "rmse_signal": 5e-3,
+    "rmse_order_parameter": 5e-3,
+    "max_coefficient_error": 1e-3,
+}
 checks_ok = (
-    rmse_theta < 1e-2
-    and rmse_signal < 5e-3
-    and rmse_r < 5e-3
-    and coef_err < 1e-3
+    rmse_theta < thresholds["rmse_theta"]
+    and rmse_signal < thresholds["rmse_signal"]
+    and rmse_r < thresholds["rmse_order_parameter"]
+    and coef_err < thresholds["max_coefficient_error"]
 )
-print(
-    f"[CHECK] {'PASS' if checks_ok else 'FAIL'}: rollout and coefficients within thresholds",
-    flush=True,
-)
+metrics = {
+    "seed": SEED,
+    "n_oscillators": N,
+    "n_train": N_TRAIN,
+    "n_eval": T_EVAL,
+    "dt": DT_SIM,
+    "rmse_theta": rmse_theta,
+    "rmse_signal": rmse_signal,
+    "rmse_order_parameter": rmse_r,
+    "max_coefficient_error": coef_err,
+    "thresholds": thresholds,
+    "passed": print_check(
+        checks_ok,
+        "rollout and coefficients within thresholds",
+    ),
+}
+save_metrics(RESULT_DIR / "metrics.json", metrics)
 
 # ---------------------------------------------------------------------------
-# 6. Figures
+# 6. Figure helpers
 # ---------------------------------------------------------------------------
-use_pub_style()
-os.makedirs("results/Kuramoto", exist_ok=True)
 
-t_roll = np.arange(T_EVAL) * DT_SIM
-colors = plt.cm.tab10.colors
-
-# 6a. Phase trajectories
-fig, axes = plt.subplots(N, 1, figsize=(8, 2 * N), sharex=True)
-for i, ax in enumerate(axes):
-    ax.plot(t_roll, THETA_TRUE[:, i], color=colors[i], lw=1.2, label="True")
-    ax.plot(t_roll, pred[:, i], color=colors[i], lw=1.0, ls="--", label="KANDy")
-    ax.set_ylabel(f"$\\theta_{i}$")
-    if i == 0:
-        ax.legend(loc="upper right", fontsize=7)
-axes[-1].set_xlabel("time")
-fig.suptitle("Kuramoto: phase trajectories", fontsize=11)
-fig.tight_layout()
-fig.savefig("results/Kuramoto/phase_trajectories.png", dpi=300, bbox_inches="tight")
-fig.savefig("results/Kuramoto/phase_trajectories.pdf", dpi=300, bbox_inches="tight")
-plt.close(fig)
-
-# 6b. Oscillator signals x_i(t) = cos(theta_i)
-fig, axes = plt.subplots(N, 1, figsize=(8, 2 * N), sharex=True)
-for i, ax in enumerate(axes):
-    ax.plot(t_roll, signal_true[:, i], color=colors[i], lw=1.2, label="True")
-    ax.plot(t_roll, signal_pred[:, i], color=colors[i], lw=1.0, ls="--", label="KANDy")
-    ax.set_ylabel(f"$\\cos(\\theta_{i})$")
-    ax.set_ylim(-1.1, 1.1)
-    if i == 0:
-        ax.legend(loc="upper right", fontsize=7)
-axes[-1].set_xlabel("time")
-fig.suptitle("Kuramoto: oscillator signals", fontsize=11)
-fig.tight_layout()
-fig.savefig("results/Kuramoto/oscillator_signals.png", dpi=300, bbox_inches="tight")
-fig.savefig("results/Kuramoto/oscillator_signals.pdf", dpi=300, bbox_inches="tight")
-plt.close(fig)
-
-# 6c. Order parameter
-fig, ax = plt.subplots(figsize=(8, 3))
-ax.plot(t_roll, r_true, color="steelblue", lw=1.4, label="True $r(t)$")
-ax.plot(t_roll, r_pred, color="tomato", lw=1.0, ls="--", label="KANDy $r(t)$")
-ax.set_xlabel("time")
-ax.set_ylabel("$r(t)$")
-ax.set_title(f"Kuramoto order parameter  (RMSE={rmse_r:.4f})")
-ax.legend(fontsize=8)
-ax.set_ylim(0, 1.05)
-fig.tight_layout()
-fig.savefig("results/Kuramoto/order_parameter.png", dpi=300, bbox_inches="tight")
-fig.savefig("results/Kuramoto/order_parameter.pdf", dpi=300, bbox_inches="tight")
-plt.close(fig)
-
-# 6d. Coefficient heatmap
-fig, axes = plt.subplots(1, 2, figsize=(10, 3.5), sharey=True)
-vmax = max(np.max(np.abs(A_true[:, 1:])), np.max(np.abs(A_eff[:, 1:])))
-for ax, mat, title in [
-    (axes[0], A_true[:, 1:], "True"),
-    (axes[1], A_eff[:, 1:], "KANDy linear readout"),
-]:
-    im = ax.imshow(mat, cmap="coolwarm", vmin=-vmax, vmax=vmax, aspect="auto")
-    ax.set_title(title)
-    ax.set_xticks(range(N_FEAT))
-    ax.set_xticklabels(FEATURE_NAMES, rotation=45, ha="right", fontsize=7)
-    ax.set_xlabel("lift feature")
-axes[0].set_yticks(range(N))
-axes[0].set_yticklabels([f"$d\\theta_{i}/dt$" for i in range(N)])
-fig.colorbar(im, ax=axes, shrink=0.85, label="coefficient")
-fig.suptitle("Kuramoto coefficient recovery", fontsize=11)
-fig.savefig("results/Kuramoto/linear_coefficients.png", dpi=300, bbox_inches="tight")
-fig.savefig("results/Kuramoto/linear_coefficients.pdf", dpi=300, bbox_inches="tight")
-plt.close(fig)
-
-# 6e. Loss curves
-if hasattr(model, "train_results_") and model.train_results_ is not None:
-    fig, ax = plot_loss_curves(
-        model.train_results_,
-        save="results/Kuramoto/loss_curves",
-    )
+def plot_phase_trajectories(
+    outdir: Path,
+    t_roll: np.ndarray,
+    theta_true: np.ndarray,
+    theta_pred: np.ndarray,
+) -> None:
+    colors = plt.cm.tab10.colors
+    fig, axes = plt.subplots(N, 1, figsize=(8, 2 * N), sharex=True)
+    for i, ax in enumerate(axes):
+        ax.plot(t_roll, theta_true[:, i], color=colors[i], lw=1.2, label="True")
+        ax.plot(t_roll, theta_pred[:, i], color=colors[i], lw=1.0, ls="--", label="KANDy")
+        ax.set_ylabel(f"$\\theta_{i}$")
+        if i == 0:
+            ax.legend(loc="upper right", fontsize=7)
+    axes[-1].set_xlabel("time")
+    fig.suptitle("Kuramoto: phase trajectories", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(outdir / "phase_trajectories.png", dpi=300, bbox_inches="tight")
+    fig.savefig(outdir / "phase_trajectories.pdf", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
-print("[FIGS]  Saved results/Kuramoto/")
+
+def plot_oscillator_signals(
+    outdir: Path,
+    t_roll: np.ndarray,
+    signal_true: np.ndarray,
+    signal_pred: np.ndarray,
+) -> None:
+    colors = plt.cm.tab10.colors
+    fig, axes = plt.subplots(N, 1, figsize=(8, 2 * N), sharex=True)
+    for i, ax in enumerate(axes):
+        ax.plot(t_roll, signal_true[:, i], color=colors[i], lw=1.2, label="True")
+        ax.plot(t_roll, signal_pred[:, i], color=colors[i], lw=1.0, ls="--", label="KANDy")
+        ax.set_ylabel(f"$\\cos(\\theta_{i})$")
+        ax.set_ylim(-1.1, 1.1)
+        if i == 0:
+            ax.legend(loc="upper right", fontsize=7)
+    axes[-1].set_xlabel("time")
+    fig.suptitle("Kuramoto: oscillator signals", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(outdir / "oscillator_signals.png", dpi=300, bbox_inches="tight")
+    fig.savefig(outdir / "oscillator_signals.pdf", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_order_parameter(
+    outdir: Path,
+    t_roll: np.ndarray,
+    r_true: np.ndarray,
+    r_pred: np.ndarray,
+    rmse_r: float,
+) -> None:
+    fig, ax = plt.subplots(figsize=(8, 3))
+    ax.plot(t_roll, r_true, color="steelblue", lw=1.4, label="True $r(t)$")
+    ax.plot(t_roll, r_pred, color="tomato", lw=1.0, ls="--", label="KANDy $r(t)$")
+    ax.set_xlabel("time")
+    ax.set_ylabel("$r(t)$")
+    ax.set_title(f"Kuramoto order parameter  (RMSE={rmse_r:.4f})")
+    ax.legend(fontsize=8)
+    ax.set_ylim(0, 1.05)
+    fig.tight_layout()
+    fig.savefig(outdir / "order_parameter.png", dpi=300, bbox_inches="tight")
+    fig.savefig(outdir / "order_parameter.pdf", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_linear_coefficients(
+    outdir: Path,
+    true_coef: np.ndarray,
+    learned_coef: np.ndarray,
+) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(10, 3.5), sharey=True)
+    vmax = max(np.max(np.abs(true_coef[:, 1:])), np.max(np.abs(learned_coef[:, 1:])))
+    for ax, mat, title in [
+        (axes[0], true_coef[:, 1:], "True"),
+        (axes[1], learned_coef[:, 1:], "KANDy linear readout"),
+    ]:
+        im = ax.imshow(mat, cmap="coolwarm", vmin=-vmax, vmax=vmax, aspect="auto")
+        ax.set_title(title)
+        ax.set_xticks(range(N_FEAT))
+        ax.set_xticklabels(FEATURE_NAMES, rotation=45, ha="right", fontsize=7)
+        ax.set_xlabel("lift feature")
+    axes[0].set_yticks(range(N))
+    axes[0].set_yticklabels([f"$d\\theta_{i}/dt$" for i in range(N)])
+    fig.colorbar(im, ax=axes, shrink=0.85, label="coefficient")
+    fig.suptitle("Kuramoto coefficient recovery", fontsize=11)
+    fig.savefig(outdir / "linear_coefficients.png", dpi=300, bbox_inches="tight")
+    fig.savefig(outdir / "linear_coefficients.pdf", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_training_loss(outdir: Path, model: KANDy) -> None:
+    if hasattr(model, "train_results_") and model.train_results_ is not None:
+        fig, _ax = plot_loss_curves(
+            model.train_results_,
+            save=str(outdir / "loss_curves"),
+        )
+        plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# 7. Figures
+# ---------------------------------------------------------------------------
+use_pub_style()
+t_roll = np.arange(T_EVAL) * DT_SIM
+plot_phase_trajectories(RESULT_DIR, t_roll, THETA_TRUE, pred)
+plot_oscillator_signals(RESULT_DIR, t_roll, signal_true, signal_pred)
+plot_order_parameter(RESULT_DIR, t_roll, r_true, r_pred, rmse_r)
+plot_linear_coefficients(RESULT_DIR, A_true, A_eff)
+plot_training_loss(RESULT_DIR, model)
+
+print(f"[FIGS]  Saved {RESULT_DIR}/")

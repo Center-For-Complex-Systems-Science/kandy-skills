@@ -86,6 +86,8 @@ KAN:  width = [5, 2],  base_fun='zero'
 """
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
@@ -94,6 +96,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
+from _utils import ensure_outdir, print_check, save_metrics
 from kandy import KANDy, CustomLift, DMDLift, PolynomialLift
 from kandy.plotting import plot_all_edges, plot_loss_curves, use_pub_style
 
@@ -151,11 +158,13 @@ def match_error(est, true=TRUE_EIGS):
 # ---------------------------------------------------------------------------
 print("\n[TRAP-1] sort_by='magnitude' keeps the most PERSISTENT modes, but")
 print("[TRAP-1] lambda=-1 is the fastest-decaying eigenvalue here:")
+trap1 = {}
 for n_modes in (3, 5):
     lift = DMDLift(n_modes=n_modes, dictionary=PolynomialLift(degree=2))
     lift.fit(traj)
     est = continuous_eigs(lift)
-    got_lambda = np.min(np.abs(est - LAMBDA)) < 1e-6
+    got_lambda = bool(np.min(np.abs(est - LAMBDA)) < 1e-6)
+    trap1[n_modes] = got_lambda
     print(f"[TRAP-1]   n_modes={n_modes}: {np.round(np.sort(est.real), 4)}   "
           f"lambda=-1 {'RECOVERED' if got_lambda else 'MISSING'}")
 print("[TRAP-1] The dictionary has 5 observables, so ask for all 5 — the mode")
@@ -288,6 +297,57 @@ print("[LIMIT] A limit cycle admits no finite polynomial Koopman invariant")
 print("[LIMIT] subspace, so these are EFFECTIVE modes with nothing exact to")
 print("[LIMIT] check them against.  DMDLift still gives a usable basis — but")
 print("[LIMIT] the exactness above belongs to the system, not to the method.")
+
+# ---------------------------------------------------------------------------
+# 7. Verification
+#
+#     Every criterion here is a TRAP that must still fire.  This example teaches
+#     three ways to get a plausible-looking Koopman spectrum that is wrong, so
+#     the check asserts both halves of each: n_modes=3 must still lose the
+#     lambda mode while n_modes=5 keeps it; gluing trajectories must still be
+#     worse than the single trajectory despite having 4x the data; and the
+#     box-trained symbolic fit must still beat the trajectory-trained one.
+#     If any trap stopped firing the example would silently stop teaching.
+# ---------------------------------------------------------------------------
+_, net_traj, _, fr_traj = results["trajectory"]
+_, net_box, _, fr_box = results["box"]
+THRESHOLDS = {
+    "eig_err_single_max": 1e-6,       # exact spectrum from one clean trajectory
+    "glue_penalty_min": 100.0,        # gluing must be >=100x worse
+    "lsq_r2_min": 0.999999,           # the phi coordinates really are linear
+    "box_formula_r2_min": 0.99,
+    "trajectory_formula_r2_max": 0.95,  # collinear data defeats edge snapping
+}
+glue_penalty = float(err_glued / max(err_single, 1e-300))
+passed = print_check(
+    err_single <= THRESHOLDS["eig_err_single_max"]
+    and glue_penalty >= THRESHOLDS["glue_penalty_min"]
+    and trap1[5] and not trap1[3]
+    and min(lsq_r2) >= THRESHOLDS["lsq_r2_min"]
+    and float(np.min(fr_box)) >= THRESHOLDS["box_formula_r2_min"]
+    and float(np.min(fr_traj)) <= THRESHOLDS["trajectory_formula_r2_max"],
+    "Koopman slow manifold: exact spectrum and all three EDMD traps firing",
+)
+RESULT_DIR = ensure_outdir("results/KoopmanSlowManifold")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "KoopmanSlowManifold",
+    "category": "odes",
+    "seed": SEED,
+    "mu": MU,
+    "lambda": LAMBDA,
+    "true_eigenvalues": TRUE_EIGS.tolist(),
+    "eig_err_single_trajectory": float(err_single),
+    "eig_err_glued_trajectories": float(err_glued),
+    "glue_penalty": glue_penalty,
+    "trap1_lambda_recovered": {str(k): v for k, v in trap1.items()},
+    "lsq_r2_on_phi": [float(v) for v in lsq_r2],
+    "network_r2_trajectory": [float(v) for v in net_traj],
+    "network_r2_box": [float(v) for v in net_box],
+    "formula_r2_trajectory": np.asarray(fr_traj).tolist(),
+    "formula_r2_box": np.asarray(fr_box).tolist(),
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
 print("[LIMIT] For Van der Pol, odes/van_der_pol_rbf_example.py is the better")
 print("[LIMIT] recipe: RadialBasisLift, validated by rollout.")
 

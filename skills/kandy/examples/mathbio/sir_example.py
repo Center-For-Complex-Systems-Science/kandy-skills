@@ -41,6 +41,8 @@ KAN:  width = [4, 3],  base_fun='zero' (pure spline, no SiLU bias)
 """
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
@@ -49,6 +51,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
 from kandy import KANDy, CustomLift
 from kandy.plotting import (
     plot_all_edges,
@@ -56,6 +62,7 @@ from kandy.plotting import (
     plot_loss_curves,
     use_pub_style,
 )
+from _utils import ensure_outdir, print_check, save_metrics
 
 # ---------------------------------------------------------------------------
 # 0. Reproducibility
@@ -147,6 +154,17 @@ true_traj = sol.y.T
 
 pred_traj = model.rollout(true_traj[0], T=len(true_traj), dt=DT, integrator="rk4")
 
+# Linear readout of the trained network, before get_formula() snaps the edges.
+#     dS/dt = -0.9*SI ;  dI/dt = 0.9*SI - 0.2*I ;  dR/dt = 0.2*I
+A_TRUE = np.array([
+    [0.0,    0.0, 0.0, -BETA],
+    [0.0, -GAMMA, 0.0,  BETA],
+    [0.0,  GAMMA, 0.0,   0.0],
+])
+A_hat, *_ = np.linalg.lstsq(model.lift(X), model.predict(X), rcond=None)
+coef_abs_err = float(np.abs(A_hat.T - A_TRUE).max())
+print(f"[EVAL]  max |A_hat - A_true| over all 12 coefficients: {coef_abs_err:.5f}")
+
 rmse = np.sqrt(np.mean((pred_traj - true_traj) ** 2))
 peak_true = true_traj[:, 1].max()
 peak_pred = pred_traj[:, 1].max()
@@ -176,10 +194,57 @@ print(f"[SYMBOLIC] True:  dS/dt = -{BETA}*SI      "
       f"dI/dt = {BETA}*SI - {GAMMA}*I      dR/dt = {GAMMA}*I")
 
 # ---------------------------------------------------------------------------
+# 5b. Verification
+#
+#     cond(Theta) is gated as well as the fit.  It is the diagnostic the whole
+#     example exists to teach: on trajectory data (S+I+R constant) it climbs
+#     into the thousands and the coefficients stop being identifiable, even
+#     though every R^2 still looks perfect.  A run where cond had drifted up
+#     would mean the box sampling silently stopped working.
+# ---------------------------------------------------------------------------
+THRESHOLDS = {
+    "network_r2_min": 0.999,
+    "coef_abs_err_max": 0.02,      # ~2% of beta
+    "formula_r2_min": 0.99,
+    "rollout_rmse_max": 0.02,
+    "peak_infected_abs_err_max": 0.01,
+    "cond_theta_max": 100.0,       # box sampling keeps this small
+}
+peak_err = float(abs(peak_pred - peak_true))
+passed = print_check(
+    min(raw_r2) >= THRESHOLDS["network_r2_min"]
+    and coef_abs_err <= THRESHOLDS["coef_abs_err_max"]
+    and float(np.min(r2)) >= THRESHOLDS["formula_r2_min"]
+    and rmse <= THRESHOLDS["rollout_rmse_max"]
+    and peak_err <= THRESHOLDS["peak_infected_abs_err_max"]
+    and cond <= THRESHOLDS["cond_theta_max"],
+    "SIR cross-term recovery, identifiability and outbreak rollout",
+)
+RESULT_DIR = ensure_outdir("results/SIR")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "SIR",
+    "category": "mathbio",
+    "seed": SEED,
+    "n_train": N_SAMPLES,
+    "beta": BETA,
+    "gamma": GAMMA,
+    "sampling": "uniform box + true RHS (oracle derivatives)",
+    "cond_theta": float(cond),
+    "network_r2": [float(v) for v in raw_r2],
+    "coef_abs_err": coef_abs_err,
+    "formula_r2": np.asarray(r2).tolist(),
+    "rollout_rmse": float(rmse),
+    "peak_infected_true": float(peak_true),
+    "peak_infected_pred": float(peak_pred),
+    "peak_infected_abs_err": peak_err,
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
+
+# ---------------------------------------------------------------------------
 # 6. Figures
 # ---------------------------------------------------------------------------
 use_pub_style()
-os.makedirs("results/SIR", exist_ok=True)
 
 # 6a. Outbreak curves: true vs rollout
 fig, ax = plt.subplots(figsize=(9, 4))

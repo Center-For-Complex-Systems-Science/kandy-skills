@@ -16,6 +16,8 @@ recovers the exact structure of the Hopf map.
 """
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
@@ -23,6 +25,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
+from _utils import ensure_outdir, print_check, save_metrics
 from kandy import KANDy, CustomLift
 from kandy.plotting import (
     get_all_edge_activations,
@@ -144,6 +151,46 @@ for name, mdl, fnames in [
             print(f"  {comp} = {f}")
     except Exception as exc:
         print(f"  Symbolic extraction failed: {exc}")
+
+# ---------------------------------------------------------------------------
+# 5b. Verification
+#
+#     The Hopf map is quadratic in the S^3 coordinates, so the engineered lift
+#     must win decisively and the raw lift must not.  The output also has to
+#     LAND ON S^2 — a model can have small RMSE while drifting off the sphere,
+#     so |p| - 1 is checked separately from pointwise error.  Nothing in
+#     training imposed the constraint, which makes it a label-free check.
+# ---------------------------------------------------------------------------
+norm_dev = float(np.abs(np.linalg.norm(pred_eng, axis=1) - 1.0).max())
+lift_advantage = float(rmse_raw / max(rmse_eng, 1e-12))
+print(f"[EVAL]  max ||p|| - 1 over predictions: {norm_dev:.6f} "
+      f"(never imposed during training)")
+print(f"[EVAL]  engineered lift is {lift_advantage:.1f}x better than raw")
+
+THRESHOLDS = {
+    "engineered_rmse_max": 0.02,
+    "raw_lift_penalty_min": 5.0,     # quadratic map is out of separable reach
+    "sphere_norm_dev_max": 0.05,     # predictions stay on S^2
+}
+passed = print_check(
+    rmse_eng <= THRESHOLDS["engineered_rmse_max"]
+    and lift_advantage >= THRESHOLDS["raw_lift_penalty_min"]
+    and norm_dev <= THRESHOLDS["sphere_norm_dev_max"],
+    "Hopf fibration recovered by the engineered lift, output stays on S^2",
+)
+RESULT_DIR = ensure_outdir("results/Hopf")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "Hopf",
+    "category": "geometry",
+    "seed": SEED,
+    "n_test": int(n_test),
+    "rmse_raw_lift": float(rmse_raw),
+    "rmse_engineered_lift": float(rmse_eng),
+    "raw_lift_penalty": lift_advantage,
+    "sphere_norm_deviation": norm_dev,
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
 
 # ---------------------------------------------------------------------------
 # 6. Figures

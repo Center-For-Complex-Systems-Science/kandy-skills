@@ -11,7 +11,7 @@ A Claude Code **skill/plugin repository** — documentation and example scripts 
 - `.claude-plugin/plugin.json` — plugin manifest; `marketplace.json` makes the repo installable as its own marketplace (`/plugin install kandy@kandy-skills`).
 - `skills/kandy/SKILL.md` — the skill entry point. Its frontmatter `description` drives skill discovery/triggering; the body is the always-loaded core (workflow, lift-selection table, example index).
 - `skills/kandy/references/` — on-demand deep-dives loaded from SKILL.md: `lifts.md`, `training.md`, `symbolic.md`, `numerics.md`, `api.md`.
-- `skills/kandy/examples/` — self-contained runnable scripts, one per benchmark system, grouped into subdirectories by fit recipe (`odes/`, `maps/`, `oscillators/`, `pdes/`, `fluids/`, `mathbio/`, `geometry/`). Each simulates its own training data, fits a KANDy model, validates by rollout, and extracts symbolic formulas. New examples go in the category matching their data type / training technique — the categories exist so an agent can find the recipe to imitate, so keep one obvious example per technique.
+- `skills/kandy/examples/` — self-contained runnable scripts, one per benchmark system, grouped into subdirectories by fit recipe (`odes/`, `maps/`, `oscillators/`, `pdes/`, `fluids/`, `plasma/`, `mathbio/`, `geometry/`). Each simulates its own training data, fits a KANDy model, validates by rollout, and extracts symbolic formulas. New examples go in the category matching their data type / training technique — the categories exist so an agent can find the recipe to imitate, so keep one obvious example per technique.
 
 ## Working on the skill
 

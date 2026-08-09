@@ -74,7 +74,9 @@ KAN:  width = [12, 11],  base_fun='zero'   (all 132 edges linear)
 """
 
 import os
+import sys
 import time
+from pathlib import Path
 
 import numpy as np
 import sympy as sp
@@ -85,6 +87,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  (registers 3d projection)
 from scipy.integrate import solve_ivp
+
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
+from _utils import ensure_outdir, print_check, save_metrics
 
 from kandy import KANDy, CustomLift
 from kandy.plotting import plot_all_edges, plot_loss_curves, use_pub_style
@@ -376,11 +384,62 @@ r2 = model.score_formula(formulas, X, X_dot, var_names=FEATURE_NAMES)
 print(f"[SYMBOLIC] Formula R^2, frame rows: {np.round(np.asarray(r2)[:9], 6)}")
 
 # ---------------------------------------------------------------------------
+# 5b. Verification
+#
+#     The SO(3) residual is the interesting criterion.  Orthonormality and
+#     right-handedness were never encoded in the lift and never appear in the
+#     loss, so their drift along the LEARNED rollout measures something no
+#     pointwise error can: whether the recovered generator is actually
+#     skew-symmetric.  A model can track the frame well for a while and still be
+#     leaking a symmetric part that destroys the frame later, so this is gated
+#     on the WORST residual over the whole rollout, not the final value.
+# ---------------------------------------------------------------------------
+coef_abs_err = float(np.abs(A_eff[:9] - A_TRUE[:9]).max())
+kappa_drift = float(abs(pred_traj[-1, 9] - KAPPA0))
+tau_drift = float(abs(pred_traj[-1, 10] - TAU0))
+THRESHOLDS = {
+    "coef_abs_err_max": 0.02,
+    "frame_rmse_max": 0.05,
+    "so3_residual_max": 0.05,      # label-free: never in the lift or the loss
+    "carried_param_drift_max": 0.01,
+    "curve_rmse_max": 0.10,
+    "formula_r2_min": 0.99,
+    "cond_theta_max": 20.0,
+}
+passed = print_check(
+    coef_abs_err <= THRESHOLDS["coef_abs_err_max"]
+    and frame_rmse <= THRESHOLDS["frame_rmse_max"]
+    and worst <= THRESHOLDS["so3_residual_max"]
+    and max(kappa_drift, tau_drift) <= THRESHOLDS["carried_param_drift_max"]
+    and curve_rmse <= THRESHOLDS["curve_rmse_max"]
+    and float(np.min(np.asarray(r2)[:9])) >= THRESHOLDS["formula_r2_min"]
+    and cond <= THRESHOLDS["cond_theta_max"],
+    "Frenet-Serret generator recovered; frame stays in SO(3) along the rollout",
+)
+RESULT_DIR = ensure_outdir("results/FrenetSerret")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "FrenetSerret",
+    "category": "geometry",
+    "seed": SEED,
+    "sampling": "uniform box + true RHS (oracle derivatives)",
+    "cond_theta": float(cond),
+    "coef_abs_err": coef_abs_err,
+    "network_r2_frame_rows": np.asarray(raw_r2)[:9].tolist(),
+    "frame_rollout_rmse": float(frame_rmse),
+    "so3_worst_residual": float(worst),
+    "kappa_drift": kappa_drift,
+    "tau_drift": tau_drift,
+    "curve_rmse": float(curve_rmse),
+    "formula_r2_frame_rows": np.asarray(r2)[:9].tolist(),
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
+
+# ---------------------------------------------------------------------------
 # 6. Figures
 # ---------------------------------------------------------------------------
 use_pub_style()
-OUT = "results/FrenetSerret"
-os.makedirs(OUT, exist_ok=True)
+OUT = str(ensure_outdir("results/FrenetSerret"))
 
 # 6a. 3D reconstructed curve — true helix vs KANDy
 fig = plt.figure(figsize=(6.5, 5.5))

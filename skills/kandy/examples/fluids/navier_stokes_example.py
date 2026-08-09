@@ -27,12 +27,20 @@ example focuses on demonstrating the KANDy API for 3D vector-field dynamics.
 """
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
+from _utils import ensure_outdir, print_check, save_metrics
 
 from kandy import KANDy, CustomLift
 from kandy.plotting import (
@@ -300,16 +308,12 @@ model.fit(
 )
 
 # ---------------------------------------------------------------------------
-# 5. Symbolic extraction
+# 5. Evaluation
+#
+#    ORDERING: symbolic extraction moved to the end of this script — it used to
+#    run here, so the test MSE and the readout below were measuring the snapped
+#    surrogate rather than the trained network.
 # ---------------------------------------------------------------------------
-print("\n[SYMBOLIC] Extracting formulas for (u_t, v_t, w_t) ...")
-try:
-    formulas = model.get_formula(var_names=FEATURE_NAMES, round_places=2)
-    for lab, f in zip(["u_t", "v_t", "w_t"], formulas):
-        print(f"  {lab} = {f}")
-except Exception as exc:
-    print(f"  Symbolic extraction failed: {exc}")
-
 # ---------------------------------------------------------------------------
 # 6. Evaluation — point-wise MSE on test set
 # ---------------------------------------------------------------------------
@@ -373,3 +377,67 @@ fig.savefig("results/NavierStokes/edge_activations.png", dpi=300, bbox_inches="t
 plt.close(fig)
 
 print("[FIGS]  Saved results/NavierStokes/")
+
+# ---------------------------------------------------------------------------
+# 6b. Verification
+#
+#     The ABC flow is a steady Beltrami solution: the nonlinear advection is
+#     balanced by pressure, leaving u_t = nu*laplacian(u).  So against the 12
+#     lifted features the only non-zero coefficients are on the three
+#     Laplacians, all equal to nu.  The nine OTHER features — velocities,
+#     vorticities and the quadratic invariants — must carry no weight; that
+#     sparsity is the structural claim, and nu is the quantitative one.
+# ---------------------------------------------------------------------------
+LAP_IDX = [9, 10, 11]
+A_hat, *_ = np.linalg.lstsq(Theta, model.predict(Theta), rcond=None)
+A_hat = A_hat.T                                     # (3 outputs, 12 features)
+nu_recovered = [float(A_hat[i, LAP_IDX[i]]) for i in range(3)]
+nu_rel_err = float(max(abs(v - NU) / NU for v in nu_recovered))
+other = np.delete(A_hat, LAP_IDX, axis=1)
+absent_max = float(np.abs(other).max())
+r2_test = float(1.0 - np.sum((Ud_test - Ud_pred) ** 2)
+                / np.sum((Ud_test - Ud_test.mean()) ** 2))
+print(f"[EVAL]  nu recovered per component {np.round(nu_recovered, 5)} "
+      f"vs true {NU}  ({100 * nu_rel_err:.2f}% error)")
+print(f"[EVAL]  largest weight on a non-Laplacian feature: {absent_max:.5f}")
+print(f"[EVAL]  Held-out R^2: {r2_test:.6f}")
+
+THRESHOLDS = {
+    "nu_rel_err_max": 0.10,
+    "absent_coef_weight_max": 0.05,
+    "test_r2_min": 0.99,
+}
+passed = print_check(
+    nu_rel_err <= THRESHOLDS["nu_rel_err_max"]
+    and absent_max <= THRESHOLDS["absent_coef_weight_max"]
+    and r2_test >= THRESHOLDS["test_r2_min"],
+    "ABC flow: viscous balance recovered, advective features stay at zero",
+)
+RESULT_DIR = ensure_outdir("results/NavierStokes")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "NavierStokes",
+    "category": "fluids",
+    "seed": SEED,
+    "sampling": "pseudo-spectral ABC-flow snapshots",
+    "nu_true": NU,
+    "nu_recovered": nu_recovered,
+    "nu_rel_err": nu_rel_err,
+    "feature_names": FEATURE_NAMES,
+    "absent_coef_weight_max": absent_max,
+    "test_r2": r2_test,
+    "test_mse": float(mse),
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
+
+# ---------------------------------------------------------------------------
+# 8. Symbolic extraction  (LAST — get_formula mutates the model in place)
+# ---------------------------------------------------------------------------
+print("\n[SYMBOLIC] Extracting formulas for (u_t, v_t, w_t) ...")
+try:
+    formulas = model.get_formula(var_names=FEATURE_NAMES, round_places=2)
+    for lab, f in zip(["u_t", "v_t", "w_t"], formulas):
+        print(f"  {lab} = {f}")
+    print(f"  [TRUE] u_t = {NU}*lap(u) componentwise (steady Beltrami balance)")
+except Exception as exc:
+    print(f"  Symbolic extraction failed: {exc}")

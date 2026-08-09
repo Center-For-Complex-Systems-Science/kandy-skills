@@ -42,12 +42,20 @@ KAN:  width = [8, 1],  base_fun='zero'
 """
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
+from _utils import ensure_outdir, print_check, save_metrics
 
 from kandy import KANDy, CustomLift
 from kandy.plotting import plot_all_edges, plot_loss_curves, use_pub_style
@@ -208,8 +216,10 @@ roll_rel  = roll_rmse / np.std(w_ref)
 print(f"[EVAL]  PDE rollout ({ROLL_STEPS} steps, t={ROLL_STEPS * DT:.2f}): "
       f"RMSE {roll_rmse:.6f}  ({100 * roll_rel:.3f}% of field std)")
 
-# Capture edge inputs before snapping
+# Capture edge inputs and the trained network's output before snapping —
+# get_formula() below rewrites every edge in place.
 theta_t = torch.tensor(Theta[:2048], dtype=torch.float32)
+model_out_pre_snap = model.predict(Theta)
 
 # ---------------------------------------------------------------------------
 # 5. Symbolic extraction — the RHS is linear in these features
@@ -226,6 +236,71 @@ print(f"[SYMBOLIC] True:  dw/dt = -1*u*w_x - 1*v*w_y + {NU}*lap_w")
 print("[SYMBOLIC] The five unused features (w, u, v, w_x, w_y) should be absent — "
       "\n           their edges were driven to zero, recovering the equation's "
       "structure.")
+
+# ---------------------------------------------------------------------------
+# 5b. Verification
+#
+#     dw/dt = -u*w_x - v*w_y + nu*lap_w, so against the eight lifted features
+#     [w, u, v, w_x, w_y, lap_w, u*w_x, v*w_y] the true readout is
+#     [0, 0, 0, 0, 0, nu, -1, -1].  Five of the eight coefficients must be ZERO,
+#     and those are gated as tightly as the three active ones: w_x and w_y are
+#     available and dimensionally plausible, so weight landing on them would
+#     mean the model found a numerically adequate but physically wrong operator.
+#     Recovering nu from data is the quantitative part.
+# ---------------------------------------------------------------------------
+A_TRUE = np.array([0.0, 0.0, 0.0, 0.0, 0.0, NU, -1.0, -1.0])
+A_hat, *_ = np.linalg.lstsq(Theta, model_out_pre_snap, rcond=None)
+A_hat = A_hat.ravel()
+nu_rel_err = float(abs(A_hat[5] - NU) / NU)
+advection_err = float(np.abs(A_hat[[6, 7]] - A_TRUE[[6, 7]]).max())
+absent_max = float(np.abs(A_hat[:5]).max())
+print(f"[EVAL]  Linear readout: {np.round(A_hat, 4)}")
+print(f"[EVAL]  nu recovered {A_hat[5]:.5f} vs true {NU} "
+      f"({100 * nu_rel_err:.2f}% error)")
+print(f"[EVAL]  advection coefficients max error {advection_err:.4f}; "
+      f"largest weight on an absent feature {absent_max:.4f}")
+
+THRESHOLDS = {
+    "network_r2_min": 0.99,
+    "field_r2_min": 0.99,
+    "nu_rel_err_max": 0.10,
+    "advection_coef_abs_err_max": 0.05,
+    "absent_coef_weight_max": 0.05,
+    "rollout_rel_rmse_max": 0.05,
+    "formula_r2_min": 0.99,
+}
+passed = print_check(
+    float(raw_r2) >= THRESHOLDS["network_r2_min"]
+    and float(field_r2) >= THRESHOLDS["field_r2_min"]
+    and nu_rel_err <= THRESHOLDS["nu_rel_err_max"]
+    and advection_err <= THRESHOLDS["advection_coef_abs_err_max"]
+    and absent_max <= THRESHOLDS["absent_coef_weight_max"]
+    and float(roll_rel) <= THRESHOLDS["rollout_rel_rmse_max"]
+    and float(np.min(r2)) >= THRESHOLDS["formula_r2_min"],
+    "2D vorticity equation recovered, including nu, with no spurious terms",
+)
+RESULT_DIR = ensure_outdir("results/NavierStokes2D")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "NavierStokes2D",
+    "category": "fluids",
+    "seed": SEED,
+    "sampling": "pseudo-spectral DNS snapshots",
+    "nu_true": NU,
+    "nu_recovered": float(A_hat[5]),
+    "nu_rel_err": nu_rel_err,
+    "feature_names": FEATURE_NAMES,
+    "true_readout": A_TRUE.tolist(),
+    "linear_readout": A_hat.tolist(),
+    "advection_coef_abs_err": advection_err,
+    "absent_coef_weight_max": absent_max,
+    "network_r2": float(raw_r2),
+    "field_r2": float(field_r2),
+    "rollout_rmse": float(roll_rmse),
+    "rollout_rel_rmse": float(roll_rel),
+    "formula_r2": np.asarray(r2).tolist(),
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
 
 # ---------------------------------------------------------------------------
 # 6. Figures

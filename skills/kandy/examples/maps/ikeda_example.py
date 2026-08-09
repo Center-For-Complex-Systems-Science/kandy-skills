@@ -34,7 +34,10 @@ Symbolic: auto_symbolic_with_costs with TRIG_LIB_CHEAP (all 4 features
 are physics-informed, so all edges get low cost).
 """
 
+import copy
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
@@ -42,6 +45,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
+from _utils import attractor_tv, ensure_outdir, print_check, save_metrics
 from kandy import KANDy, CustomLift, make_windows
 from kandy.symbolic import auto_symbolic_with_costs, TRIG_LIB_CHEAP, TRIG_LIB
 from kandy.plotting import (
@@ -264,7 +272,15 @@ rollout_results = fit_kan(
 
 # ---------------------------------------------------------------------------
 # 6. Symbolic extraction with trig-aware costs
+#
+#    auto_symbolic_with_costs REWRITES model.model_ in place, so take a
+#    snapshot of the trained network first.  The rollout in section 7 used to
+#    run on the post-snap model, which measured the surrogate rather than what
+#    was learned — the same ordering trap called out in SKILL.md, and the
+#    reason its reported attractor did not match.
 # ---------------------------------------------------------------------------
+model_trained = copy.deepcopy(model)
+
 print("\n[SYMBOLIC] Running trig-aware auto_symbolic ...")
 model.model_.save_act = True
 train_t = torch.tensor(Theta_train_n[:1024], dtype=torch.float32, device=DEVICE)
@@ -336,11 +352,12 @@ print(f"[TRUE] y_{{n+1}} =     u*(x*sin(t) + y*cos(t))")
 # ---------------------------------------------------------------------------
 
 def map_fn_np(state_np: np.ndarray) -> np.ndarray:
+    # model_trained, not model: the latter has been snapped in place above.
     theta = ikeda_lift(state_np)
     theta_n = (theta - feat_mean) / feat_std
     t = torch.tensor(theta_n, dtype=torch.float32, device=DEVICE)
     with torch.no_grad():
-        return model.model_(t).cpu().numpy()
+        return model_trained.model_(t).cpu().numpy()
 
 
 def rollout_discrete(s0: np.ndarray, horizon: int) -> np.ndarray:
@@ -359,6 +376,60 @@ true_roll = series[n_train + n_val : n_train + n_val + EVAL_HORIZON + 1]
 
 rmse = np.sqrt(np.mean((pred_roll - true_roll) ** 2))
 print(f"\n[EVAL]  Rollout RMSE (T={EVAL_HORIZON} steps): {rmse:.6f}")
+
+# ---------------------------------------------------------------------------
+# Verification
+#
+#     The Ikeda map is chaotic, so an autoregressive rollout separates from the
+#     true orbit regardless of model quality — rollout RMSE is recorded, never
+#     gated.  What must hold is the ONE-STEP map on held-out pairs, and that the
+#     learned orbit populates the same attractor, compared through its invariant
+#     measure rather than pointwise.
+# ---------------------------------------------------------------------------
+theta_test_n = (Theta_test - feat_mean) / feat_std
+with torch.no_grad():
+    pred_test = model_trained.model_(
+        torch.tensor(theta_test_n, dtype=torch.float32, device=DEVICE)
+    ).cpu().numpy()
+onestep_r2 = [
+    float(1.0 - np.sum((Y_test[:, i] - pred_test[:, i]) ** 2)
+          / np.sum((Y_test[:, i] - Y_test[:, i].mean()) ** 2))
+    for i in range(2)
+]
+print(f"[EVAL]  One-step held-out R^2 per component: {np.round(onestep_r2, 6)}")
+
+tv_distance, tv_null = attractor_tv(true_roll, pred_roll)
+finite = np.all(np.isfinite(pred_roll), axis=1)
+print(f"[EVAL]  Attractor occupancy TV distance: {tv_distance:.4f}  "
+      f"(null, true-vs-true: {tv_null:.4f})")
+
+THRESHOLDS = {
+    "onestep_r2_min": 0.999,
+    "tv_distance_vs_null_max": 2.5,
+    "rollout_must_stay_finite": True,
+}
+passed = print_check(
+    min(onestep_r2) >= THRESHOLDS["onestep_r2_min"]
+    and tv_distance <= THRESHOLDS["tv_distance_vs_null_max"] * tv_null
+    and bool(finite.all()),
+    "Ikeda one-step map and attractor occupancy",
+)
+RESULT_DIR = ensure_outdir("results/Ikeda")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "Ikeda",
+    "category": "maps",
+    "seed": SEED,
+    "n_train": int(n_train),
+    "n_test": int(n_test),
+    "onestep_r2": onestep_r2,
+    "tv_distance": tv_distance,
+    "tv_null": tv_null,
+    "rollout_rmse": float(rmse),
+    "rollout_finite": bool(finite.all()),
+    "rollout_steps": int(EVAL_HORIZON),
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
 
 # ---------------------------------------------------------------------------
 # 8. Figures

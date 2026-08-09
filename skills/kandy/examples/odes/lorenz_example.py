@@ -14,6 +14,8 @@ needs to learn separable univariate functions of each lifted feature.
 """
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
@@ -21,6 +23,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
+
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
 
 from kandy import KANDy, CustomLift
 from kandy.plotting import (
@@ -31,6 +37,7 @@ from kandy.plotting import (
     plot_loss_curves,
     use_pub_style,
 )
+from _utils import ensure_outdir, print_check, save_metrics
 
 # ---------------------------------------------------------------------------
 # 0. Reproducibility
@@ -142,6 +149,23 @@ print("[EVAL]  Lorenz is chaotic: pointwise RMSE grows once trajectories "
 # Edge inputs captured before snapping, for the figure below
 train_theta = torch.tensor(lorenz_lift(X[: int(N * 0.70)]), dtype=torch.float32)
 
+# Linear readout of the TRAINED network onto the lifted features.  This must
+# also happen before get_formula(), which replaces every spline edge with its
+# symbolic surrogate in place.
+#
+#     x_dot = -10 x + 10 y
+#     y_dot =  28 x -  1 y - xz
+#     z_dot =        -8/3 z + xy
+A_TRUE = np.array([
+    [-SIGMA, SIGMA,  0.0,  0.0,  0.0, 0.0],
+    [   RHO,  -1.0,  0.0,  0.0, -1.0, 0.0],
+    [   0.0,   0.0, -BETA, 1.0,  0.0, 0.0],
+])
+A_hat, *_ = np.linalg.lstsq(model.lift(X), model.predict(X), rcond=None)
+A_hat = A_hat.T
+coef_abs_err = float(np.abs(A_hat - A_TRUE).max())
+print(f"[EVAL]  max |A_hat - A_true| over all 18 coefficients: {coef_abs_err:.4f}")
+
 # ---------------------------------------------------------------------------
 # 5. Symbolic extraction
 #
@@ -173,10 +197,51 @@ print(f"[SYMBOLIC] cond(Theta) = {cond:.0f} on attractor data "
       f"(high => coefficients only weakly identifiable)")
 
 # ---------------------------------------------------------------------------
-# 6. Figures
+# 6. Verification
+#
+#    Rollout RMSE is NOT the criterion here — Lorenz is chaotic and any
+#    pointwise error grows once trajectories decorrelate.  What must be right
+#    is the STRUCTURE: the coefficient readout computed above, plus the
+#    symbolic formulas scoring on held-out derivatives.
+# ---------------------------------------------------------------------------
+#     The two criteria test different things and the gap between them is the
+#     point.  The COEFFICIENT check tests what the network learned, and it is
+#     tight.  The SYMBOLIC check is deliberately looser: this example trains on
+#     attractor data, where cond(Theta) ~ 1e3 leaves the constants only weakly
+#     identifiable, and z_dot degrades most (its xy coefficient comes out near
+#     0.86 rather than 1.0, plus a spurious offset).  That degradation is a
+#     documented property of the sampling, not a regression — sample over a box
+#     instead, as mathbio/sir_example.py does, and it goes away.
+r2_min = float(np.min(r2))
+THRESHOLDS = {
+    "formula_r2_min": 0.95,       # symbolic formulas explain >=95% of variance
+    "coef_abs_err_max": 0.05,     # 0.2% of the largest true coefficient (rho=28)
+}
+passed = print_check(
+    r2_min >= THRESHOLDS["formula_r2_min"]
+    and coef_abs_err <= THRESHOLDS["coef_abs_err_max"],
+    "Lorenz coefficient recovery and symbolic R^2",
+)
+RESULT_DIR = ensure_outdir("results/Lorenz")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "Lorenz",
+    "category": "odes",
+    "seed": SEED,
+    "n_train": int(N),
+    "dt": DT,
+    "formula_r2": np.asarray(r2).tolist(),
+    "formula_r2_min": r2_min,
+    "coef_abs_err": coef_abs_err,
+    "rollout_rmse": float(rmse),
+    "cond_theta": float(cond),
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
+
+# ---------------------------------------------------------------------------
+# 7. Figures
 # ---------------------------------------------------------------------------
 use_pub_style()
-os.makedirs("results/Lorenz", exist_ok=True)
 
 # 6a. Attractor overlay (x–z projection)
 fig, ax = plot_attractor_overlay(

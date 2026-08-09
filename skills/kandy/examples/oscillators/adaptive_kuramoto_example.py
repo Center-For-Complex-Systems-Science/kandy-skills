@@ -25,8 +25,14 @@ coefficients non-identifiable.
 """
 
 import os
+import sys
+from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-kandy")
+
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
 
 import numpy as np
 import torch
@@ -39,6 +45,7 @@ from scipy.integrate import solve_ivp
 
 from kandy import KANDy, CustomLift
 from kandy.plotting import plot_loss_curves, use_pub_style
+from _utils import ensure_outdir, print_check, save_metrics, wrap_pi
 
 # ---------------------------------------------------------------------------
 # 0. Reproducibility / parameters
@@ -60,6 +67,7 @@ KAPPA_SAMPLE_RANGE = 0.7
 
 rng = np.random.default_rng(SEED)
 OMEGA = rng.uniform(-0.5, 0.5, size=N)
+RESULT_DIR = ensure_outdir("results/Adaptive-Kuramoto")
 
 # Directed off-diagonal pairs for kappa_ij.
 OD_PAIRS = [(i, j) for i in range(N) for j in range(N) if i != j]
@@ -287,11 +295,6 @@ model_kappa.fit(
 # 5. Coupled rollout validation
 # ---------------------------------------------------------------------------
 
-def wrap_pi(x: np.ndarray) -> np.ndarray:
-    """Wrap phase differences to (-pi, pi]."""
-    return (x + np.pi) % (2 * np.pi) - np.pi
-
-
 def learned_rhs(state: np.ndarray) -> np.ndarray:
     """Combined learned RHS for the raw state vector."""
     dtheta = model_phase.predict(state).ravel()
@@ -412,18 +415,43 @@ print("           kcij = kappa_ij*cos(theta_j-theta_i)")
 print(f"           phase max coefficient error = {phase_coef_err:.2e}")
 print(f"           kappa max coefficient error = {kappa_coef_err:.2e}\n")
 
+thresholds = {
+    "rmse_theta": 5e-2,
+    "rmse_kappa": 1e-2,
+    "rmse_signal": 5e-2,
+    "rmse_order_parameter": 5e-3,
+    "phase_max_coefficient_error": 1e-3,
+    "kappa_max_coefficient_error": 1e-3,
+}
 checks_ok = (
-    rmse_theta < 5e-2
-    and rmse_kappa < 1e-2
-    and rmse_signal < 5e-2
-    and rmse_r < 5e-3
-    and phase_coef_err < 1e-3
-    and kappa_coef_err < 1e-3
+    rmse_theta < thresholds["rmse_theta"]
+    and rmse_kappa < thresholds["rmse_kappa"]
+    and rmse_signal < thresholds["rmse_signal"]
+    and rmse_r < thresholds["rmse_order_parameter"]
+    and phase_coef_err < thresholds["phase_max_coefficient_error"]
+    and kappa_coef_err < thresholds["kappa_max_coefficient_error"]
 )
-print(
-    f"[CHECK] {'PASS' if checks_ok else 'FAIL'}: rollout and coefficients within thresholds\n",
-    flush=True,
-)
+metrics = {
+    "seed": SEED,
+    "n_oscillators": N,
+    "n_directed_couplings": N_OD,
+    "n_train": N_TRAIN,
+    "n_eval": T_EVAL,
+    "dt": DT_SIM,
+    "rmse_theta": rmse_theta,
+    "rmse_kappa": rmse_kappa,
+    "rmse_signal": rmse_signal,
+    "rmse_order_parameter": rmse_r,
+    "phase_max_coefficient_error": phase_coef_err,
+    "kappa_max_coefficient_error": kappa_coef_err,
+    "thresholds": thresholds,
+    "passed": print_check(
+        checks_ok,
+        "rollout and coefficients within thresholds",
+    ),
+}
+save_metrics(RESULT_DIR / "metrics.json", metrics)
+print(flush=True)
 
 print("--- Phase dynamics dtheta/dt ---")
 for i, formula in enumerate(phase_formulas):
@@ -434,79 +462,112 @@ for idx, ((i, j), formula) in enumerate(zip(OD_PAIRS, kappa_formulas)):
     print(f"  dk{i}{j}/dt = {formula}")
 
 # ---------------------------------------------------------------------------
-# 7. Figures
+# 7. Figure helpers
 # ---------------------------------------------------------------------------
-use_pub_style()
-os.makedirs("results/Adaptive-Kuramoto", exist_ok=True)
 
-t_roll = np.arange(T_EVAL) * DT_SIM
-colors = plt.cm.tab10.colors
+def plot_phase_trajectories(
+    outdir: Path,
+    t_roll: np.ndarray,
+    theta_true: np.ndarray,
+    theta_pred: np.ndarray,
+) -> None:
+    colors = plt.cm.tab10.colors
+    fig, axes = plt.subplots(N, 1, figsize=(8, 2 * N), sharex=True)
+    for i, ax in enumerate(axes):
+        ax.plot(t_roll, theta_true[:, i], color=colors[i], lw=1.2, label="True")
+        ax.plot(t_roll, theta_pred[:, i], color=colors[i], lw=1.0, ls="--", label="KANDy")
+        ax.set_ylabel(f"$\\theta_{i}$")
+        if i == 0:
+            ax.legend(loc="upper right", fontsize=7)
+    axes[-1].set_xlabel("time")
+    fig.suptitle("Adaptive Kuramoto: phase trajectories", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(outdir / "phase_trajectories.png", dpi=300, bbox_inches="tight")
+    fig.savefig(outdir / "phase_trajectories.pdf", dpi=300, bbox_inches="tight")
+    plt.close(fig)
 
-# 7a. Phase trajectories
-fig, axes = plt.subplots(N, 1, figsize=(8, 2 * N), sharex=True)
-for i, ax in enumerate(axes):
-    ax.plot(t_roll, true_theta[:, i], color=colors[i], lw=1.2, label="True")
-    ax.plot(t_roll, pred_theta[:, i], color=colors[i], lw=1.0, ls="--", label="KANDy")
-    ax.set_ylabel(f"$\\theta_{i}$")
-    if i == 0:
-        ax.legend(loc="upper right", fontsize=7)
-axes[-1].set_xlabel("time")
-fig.suptitle("Adaptive Kuramoto: phase trajectories", fontsize=11)
-fig.tight_layout()
-fig.savefig("results/Adaptive-Kuramoto/phase_trajectories.png", dpi=300, bbox_inches="tight")
-fig.savefig("results/Adaptive-Kuramoto/phase_trajectories.pdf", dpi=300, bbox_inches="tight")
-plt.close(fig)
 
-# 7b. Oscillator signals x_i(t) = cos(theta_i)
-fig, axes = plt.subplots(N, 1, figsize=(8, 2 * N), sharex=True)
-for i, ax in enumerate(axes):
-    ax.plot(t_roll, signal_true[:, i], color=colors[i], lw=1.2, label="True")
-    ax.plot(t_roll, signal_pred[:, i], color=colors[i], lw=1.0, ls="--", label="KANDy")
-    ax.set_ylabel(f"$\\cos(\\theta_{i})$")
-    ax.set_ylim(-1.1, 1.1)
-    if i == 0:
-        ax.legend(loc="upper right", fontsize=7)
-axes[-1].set_xlabel("time")
-fig.suptitle("Adaptive Kuramoto: oscillator signals", fontsize=11)
-fig.tight_layout()
-fig.savefig("results/Adaptive-Kuramoto/oscillator_signals.png", dpi=300, bbox_inches="tight")
-fig.savefig("results/Adaptive-Kuramoto/oscillator_signals.pdf", dpi=300, bbox_inches="tight")
-plt.close(fig)
+def plot_oscillator_signals(
+    outdir: Path,
+    t_roll: np.ndarray,
+    signal_true: np.ndarray,
+    signal_pred: np.ndarray,
+) -> None:
+    colors = plt.cm.tab10.colors
+    fig, axes = plt.subplots(N, 1, figsize=(8, 2 * N), sharex=True)
+    for i, ax in enumerate(axes):
+        ax.plot(t_roll, signal_true[:, i], color=colors[i], lw=1.2, label="True")
+        ax.plot(t_roll, signal_pred[:, i], color=colors[i], lw=1.0, ls="--", label="KANDy")
+        ax.set_ylabel(f"$\\cos(\\theta_{i})$")
+        ax.set_ylim(-1.1, 1.1)
+        if i == 0:
+            ax.legend(loc="upper right", fontsize=7)
+    axes[-1].set_xlabel("time")
+    fig.suptitle("Adaptive Kuramoto: oscillator signals", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(outdir / "oscillator_signals.png", dpi=300, bbox_inches="tight")
+    fig.savefig(outdir / "oscillator_signals.pdf", dpi=300, bbox_inches="tight")
+    plt.close(fig)
 
-# 7c. Coupling weight trajectories for the first four directed couplings.
-n_show = min(4, N_OD)
-fig, axes = plt.subplots(n_show, 1, figsize=(8, 2 * n_show), sharex=True)
-if n_show == 1:
-    axes = [axes]
-for k_idx, ax in enumerate(axes):
-    i, j = OD_PAIRS[k_idx]
-    ax.plot(t_roll, true_kappa[:, k_idx], color=colors[k_idx % 10], lw=1.2)
-    ax.plot(t_roll, pred_kappa[:, k_idx], color=colors[k_idx % 10], lw=1.0, ls="--")
-    ax.set_ylabel(f"$\\kappa_{{{i}{j}}}$")
-axes[-1].set_xlabel("time")
-fig.suptitle("Adaptive Kuramoto: coupling weights", fontsize=11)
-fig.tight_layout()
-fig.savefig("results/Adaptive-Kuramoto/kappa_trajectories.png", dpi=300, bbox_inches="tight")
-fig.savefig("results/Adaptive-Kuramoto/kappa_trajectories.pdf", dpi=300, bbox_inches="tight")
-plt.close(fig)
 
-# 7d. Order parameter
-fig, ax = plt.subplots(figsize=(8, 3))
-ax.plot(t_roll, r_true, color="steelblue", lw=1.4, label="True $r(t)$")
-ax.plot(t_roll, r_pred, color="tomato", lw=1.0, ls="--", label="KANDy $r(t)$")
-ax.set_xlabel("time")
-ax.set_ylabel("$r(t)$")
-ax.set_title(f"Kuramoto order parameter  (RMSE={rmse_r:.4f})")
-ax.legend(fontsize=8)
-ax.set_ylim(0, 1.05)
-fig.tight_layout()
-fig.savefig("results/Adaptive-Kuramoto/order_parameter.png", dpi=300, bbox_inches="tight")
-fig.savefig("results/Adaptive-Kuramoto/order_parameter.pdf", dpi=300, bbox_inches="tight")
-plt.close(fig)
+def plot_kappa_trajectories(
+    outdir: Path,
+    t_roll: np.ndarray,
+    kappa_true: np.ndarray,
+    kappa_pred: np.ndarray,
+) -> None:
+    colors = plt.cm.tab10.colors
+    n_show = min(4, N_OD)
+    fig, axes = plt.subplots(n_show, 1, figsize=(8, 2 * n_show), sharex=True)
+    if n_show == 1:
+        axes = [axes]
+    for k_idx, ax in enumerate(axes):
+        i, j = OD_PAIRS[k_idx]
+        ax.plot(t_roll, kappa_true[:, k_idx], color=colors[k_idx % 10], lw=1.2)
+        ax.plot(t_roll, kappa_pred[:, k_idx], color=colors[k_idx % 10], lw=1.0, ls="--")
+        ax.set_ylabel(f"$\\kappa_{{{i}{j}}}$")
+    axes[-1].set_xlabel("time")
+    fig.suptitle("Adaptive Kuramoto: coupling weights", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(outdir / "kappa_trajectories.png", dpi=300, bbox_inches="tight")
+    fig.savefig(outdir / "kappa_trajectories.pdf", dpi=300, bbox_inches="tight")
+    plt.close(fig)
 
-# 7e. Coefficient heatmaps
-def coefficient_heatmap(true_coef, learned_coef, feature_names, out_names, save):
-    fig, axes = plt.subplots(1, 2, figsize=(12, max(3.5, 0.22 * len(out_names))), sharey=True)
+
+def plot_order_parameter(
+    outdir: Path,
+    t_roll: np.ndarray,
+    r_true: np.ndarray,
+    r_pred: np.ndarray,
+    rmse_r: float,
+) -> None:
+    fig, ax = plt.subplots(figsize=(8, 3))
+    ax.plot(t_roll, r_true, color="steelblue", lw=1.4, label="True $r(t)$")
+    ax.plot(t_roll, r_pred, color="tomato", lw=1.0, ls="--", label="KANDy $r(t)$")
+    ax.set_xlabel("time")
+    ax.set_ylabel("$r(t)$")
+    ax.set_title(f"Kuramoto order parameter  (RMSE={rmse_r:.4f})")
+    ax.legend(fontsize=8)
+    ax.set_ylim(0, 1.05)
+    fig.tight_layout()
+    fig.savefig(outdir / "order_parameter.png", dpi=300, bbox_inches="tight")
+    fig.savefig(outdir / "order_parameter.pdf", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_coefficient_heatmap(
+    true_coef: np.ndarray,
+    learned_coef: np.ndarray,
+    feature_names: list[str],
+    out_names: list[str],
+    save: Path,
+) -> None:
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(12, max(3.5, 0.22 * len(out_names))),
+        sharey=True,
+    )
     true_terms = true_coef[:, 1:]
     learned_terms = learned_coef[:, 1:]
     vmax = max(np.max(np.abs(true_terms)), np.max(np.abs(learned_terms)))
@@ -522,39 +583,50 @@ def coefficient_heatmap(true_coef, learned_coef, feature_names, out_names, save)
     axes[0].set_yticks(range(len(out_names)))
     axes[0].set_yticklabels(out_names, fontsize=7)
     fig.colorbar(im, ax=axes, shrink=0.85, label="coefficient")
-    fig.savefig(f"{save}.png", dpi=300, bbox_inches="tight")
-    fig.savefig(f"{save}.pdf", dpi=300, bbox_inches="tight")
+    fig.savefig(save.with_suffix(".png"), dpi=300, bbox_inches="tight")
+    fig.savefig(save.with_suffix(".pdf"), dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
-coefficient_heatmap(
+def plot_training_loss(outdir: Path, phase_model: KANDy, kappa_model: KANDy) -> None:
+    if hasattr(phase_model, "train_results_") and phase_model.train_results_:
+        fig, _ax = plot_loss_curves(
+            phase_model.train_results_,
+            save=str(outdir / "loss_phase"),
+        )
+        plt.close(fig)
+
+    if hasattr(kappa_model, "train_results_") and kappa_model.train_results_:
+        fig, _ax = plot_loss_curves(
+            kappa_model.train_results_,
+            save=str(outdir / "loss_kappa"),
+        )
+        plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# 8. Figures
+# ---------------------------------------------------------------------------
+use_pub_style()
+t_roll = np.arange(T_EVAL) * DT_SIM
+plot_phase_trajectories(RESULT_DIR, t_roll, true_theta, pred_theta)
+plot_oscillator_signals(RESULT_DIR, t_roll, signal_true, signal_pred)
+plot_kappa_trajectories(RESULT_DIR, t_roll, true_kappa, pred_kappa)
+plot_order_parameter(RESULT_DIR, t_roll, r_true, r_pred, rmse_r)
+plot_coefficient_heatmap(
     A_phase_true,
     A_phase,
     PHASE_FEATURE_NAMES,
     [f"dtheta{i}/dt" for i in range(N)],
-    "results/Adaptive-Kuramoto/phase_linear_coefficients",
+    RESULT_DIR / "phase_linear_coefficients",
 )
-coefficient_heatmap(
+plot_coefficient_heatmap(
     A_kappa_true,
     A_kappa,
     KAPPA_FEATURE_NAMES,
     [f"dk{i}{j}/dt" for (i, j) in OD_PAIRS],
-    "results/Adaptive-Kuramoto/kappa_linear_coefficients",
+    RESULT_DIR / "kappa_linear_coefficients",
 )
+plot_training_loss(RESULT_DIR, model_phase, model_kappa)
 
-# 7f. Loss curves
-if hasattr(model_phase, "train_results_") and model_phase.train_results_:
-    fig, ax = plot_loss_curves(
-        model_phase.train_results_,
-        save="results/Adaptive-Kuramoto/loss_phase",
-    )
-    plt.close(fig)
-
-if hasattr(model_kappa, "train_results_") and model_kappa.train_results_:
-    fig, ax = plot_loss_curves(
-        model_kappa.train_results_,
-        save="results/Adaptive-Kuramoto/loss_kappa",
-    )
-    plt.close(fig)
-
-print("[FIGS]  Saved results/Adaptive-Kuramoto/")
+print(f"[FIGS]  Saved {RESULT_DIR}/")

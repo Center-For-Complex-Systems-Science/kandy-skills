@@ -34,6 +34,25 @@ makes the model structurally wrong, not just inaccurate. This is a theorem
 (bilinear obstruction), not a tuning issue. When results are bad, check the
 lift first.
 
+`odes/hopf_cross_term_example.py` measures the cost in the smallest system
+where it can be plotted. Without the lift there is no equation to read: the
+best possible additive model is capped at R² = 0.962, a single-layer KAN lands
+exactly there, its two edges bend away from the true terms to absorb what they
+cannot represent, and the rolled-out limit cycle collapses by 45%. With
+`φ=[x,y,xy²,x²y]` the RHS comes back exact to 2e-5 by summing the edges. It
+also documents the two things that hide the obstruction: training on the
+attractor (where the cross term is degenerate) and reading pointwise R²
+instead of rolling out.
+
+Adding depth does not dispose of the problem, it only moves it into the width.
+`odes/quadratic_obstruction_example.py` proves the width version on `ż = z²`:
+the quadratic parts of all outputs must lie in one shared span of rank-one
+squares, and `span{x²−y², 2xy}` — the harmonic forms — contains no perfect
+square, so hidden width 2 cannot serve both equations no matter how it is
+trained. The width needed grows with the number of **distinct products** the
+equations demand, not with the number of state variables. A lift sidesteps
+this entirely: supply the products and depth 1 suffices.
+
 The corollary is just as important and easy to get backwards:
 
 **Put products of DIFFERENT variables in the lift; leave powers of a SINGLE
@@ -81,6 +100,13 @@ Two things that bite immediately:
   `copy.deepcopy` the model per extraction attempt.
 - **`var_names` names the LIFTED features, not the state variables** — pass
   the same list to `score_formula`, or it silently returns `NaN`.
+- **`fit` splits train/val/test CHRONOLOGICALLY, never shuffling** — correct for
+  a trajectory, silently wrong for rows you assembled in some order. If you
+  stratified, sorted, or concatenated per-group samples, the last 30% of rows
+  become val+test and the model never trains on them: training loss goes to
+  ~1e-8 while test loss sits flat, and early stopping fires against a range the
+  model was never shown. Shuffle before calling `fit`
+  (`plasma/heat_flux_closure_example.py`).
 
 Validate in this order: (1) rollout reproduces the attractor/trajectory,
 (2) symbolic formulas score R² ≈ 1 on held-out data, (3) formulas match known
@@ -94,6 +120,15 @@ are non-identifiable. Sample states independently over a box instead — check
 `cond` catches only *linear* dependence: a constraint manifold can leave it
 looking healthy while still making coefficients non-unique
 (`geometry/spherical_pendulum_example.py`).
+
+**Check whether you observe the state at all.** If the measurement is a
+transform of the state — fMRI BOLD, a filtered or integrated sensor, anything
+with an instrument response — then fitting the *measurement* as if it were the
+state does not merely lose accuracy, it can invert coefficients and reverse
+inferred causal direction, at high R² and with no noise
+(`mathbio/fmri_dcm_example.py`). Deconvolving first usually does not rescue it.
+Keep the observation operator inside the loss instead: simulate state →
+measurement and fit in measurement space.
 
 ## Choosing the lift (most critical decision)
 
@@ -152,6 +187,21 @@ KANDy ships a finite-volume solver suite (MUSCL + Rusanov/Roe/HLLC fluxes,
 SSP-RK2/3) for 1D periodic conservation laws: `solve_burgers`,
 `solve_viscous_burgers`, `solve_scalar`, `cfl_dt`. See `references/numerics.md`.
 
+## Example verification convention
+
+Runnable examples should be easy for an agent or CI job to verify without
+reading plots by eye:
+
+- Print one `[CHECK] PASS/FAIL` line with concrete numeric thresholds.
+- Write `results/<Example>/metrics.json` containing the metrics, thresholds,
+  and final `passed` boolean.
+- Keep plotting in named helper functions near the bottom of the script so the
+  executable recipe stays ordered as parameters, data, lift, fit, validation,
+  symbolic/coefficient readout, metrics, figures.
+- Share only repeated mechanics through `examples/_utils.py`. Keep equations,
+  lifts, simulators, pruning rules, and symbolic/readout logic inside the
+  example that demonstrates them.
+
 ## Examples
 
 Complete, runnable scripts in `examples/`, grouped by fit recipe — pick the
@@ -160,6 +210,8 @@ category matching the data type, then the script closest to the target system:
 | Category | System | Script | Notable technique |
 |---|---|---|---|
 | `odes/` | Lorenz-63 (chaotic ODE) | `lorenz_example.py` | Polynomial lift with cross-terms |
+| `odes/` | Hopf normal form | `hopf_cross_term_example.py` | **The cross-term obstruction, measured**: no equation without the lift (separable ceiling R²=0.962), exact equation with it; why depth is beside the point |
+| `odes/` | `ż = z²` (complex squaring) | `quadratic_obstruction_example.py` | **The quadratic obstruction**: hidden width 2 provably cannot serve two harmonic quadratics; width scan + PyKAN `model.plot()`; depth-1 lift recovers the equation |
 | `odes/` | Damped pendulum | `pendulum_dictionary_completion_example.py` | Dictionary completion — spline learns `sin θ` with no trig dictionary |
 | `odes/` | Van der Pol | `van_der_pol_rbf_example.py` | `RadialBasisLift` for unknown structure; validate by rollout |
 | `odes/` | x + sin(x) recovery | `sinx_recover_sine.py` | Restricted symbol library for clean `auto_symbolic` |
@@ -170,18 +222,27 @@ category matching the data type, then the script closest to the target system:
 | `oscillators/` | Kuramoto | `kuramoto_example.py` | Independent pair-sine lift; effective linear readout |
 | `oscillators/` | Adaptive Kuramoto | `adaptive_kuramoto_example.py` | Kappa-trig product lift; separate phase/kappa models |
 | `oscillators/` | Network reconstruction | `network_reconstruction_example.py` | Recover adjacency; per-node regression; post-training pruning |
+| `oscillators/` | Kuramoto–Sakaguchi on measured data | `epilepsy_kuramoto_sakaguchi_fit.py` | **Real recording, not simulation.** Identifiable κ/α readout; guard-band split; every score quoted against a baseline; gates are margins, not constants |
+| `oscillators/` | Seizure as a regime change | `epilepsy_slow_variable_seizure_fit.py` | Slow variable drives ω through a bifurcation; emergence vs. a frozen-parameter control; specificity test; clip-support check |
+| `epilepsy/` | Abstract beta→delta intervention | `epilepsy_cross_frequency_dbs_intervention.py` | Starts from the saved cross-frequency envelope model; fits one beta→delta Heaviside residual term; sweeps direct RHS additive pulses and time-varying beta→delta gain pulses against the autonomous seizure threshold |
 | `pdes/` | Inviscid Burgers | `burgers_example.py`, `burgers_fourier_example.py` | FV data, flux-form lift |
 | `pdes/` | Kuramoto–Sivashinsky | `kuramoto_sivashinsky_example.py` | 12D local PDE features |
 | `fluids/` | Navier–Stokes (ABC flow) | `navier_stokes_example.py` | 3D vorticity/velocity lift |
 | `fluids/` | 2D decaying turbulence | `navier_stokes_2d_vorticity_example.py` | Exact vorticity equation + viscosity; spectral data, PDE rollout |
 | `fluids/` | Vortex shedding (cylinder wake) | `vortex_shedding_example.py` | Reduced-order model: DNS → POD → modal ODE; slaved shift mode, Stuart–Landau |
 | `fluids/` | LES subgrid closure | `turbulence_closure_example.py` | Fitting a residual; recovers Δ²/12; measures what is *not* closable |
+| `plasma/` | Orszag–Tang vortex (2D MHD) | `orszag_tang_example.py` | Evolve the vector potential so ∇·B = 0 is structural; decoy features; recovers ν and η separately |
+| `plasma/` | Brio–Wu shock tube | `brio_wu_shock_tube_example.py` | Discovering a *flux function*; one self-similar Riemann problem is unidentifiable — fit an ensemble; shock cells are outliers |
+| `plasma/` | 2D MHD turbulence | `mhd_2d_turbulence_example.py` | Subgrid EMF closure; rival closures in one lift; coefficient recovered as a Δ² *scaling law* |
+| `plasma/` | Kinetic heat-flux closure | `heat_flux_closure_example.py` | A **nonlocal** lift coordinate (Hilbert transform); additive edges *are* the closure terms; exported as lookup tables and reinserted into the solver |
 | `mathbio/` | Holling Type II | `holling_type_ii_example.py` | 21D physics library, Adam |
+| `mathbio/` | Holling Type II, no oracle | `holling_mult_node_example.py` | Multiplication node for a product cross-term; ALS reads that one term off when `auto_symbolic` cannot |
 | `mathbio/` | SIR epidemic | `sir_example.py` | `S·I` cross-term; conservation laws break identifiability |
 | `mathbio/` | Lotka–Volterra competition | `lotka_volterra_competition_example.py` | Cross-terms in the lift, powers on the edges |
 | `mathbio/` | FitzHugh–Nagumo | `fitzhugh_nagumo_example.py` | Identity lift; edge-wise polynomial reconstruction |
 | `mathbio/` | Epileptor (seizures) | `epileptor_example.py` | Gated features for switching nonlinearities; per-equation target scaling for stiff systems |
 | `mathbio/` | Hodgkin–Huxley | `hodgkin_huxley_example.py` | Recovers biophysical constants; `m³h·V` triple product; grid-plateau diagnostic |
+| `mathbio/` | fMRI / DCM (BOLD) | `fmri_dcm_example.py` | **Nonlinear observation operator**: the state is latent. Balloon–Windkessel constants from edge *shapes*; fitting observed BOLD reverses the connectivity |
 | `geometry/` | Hopf fibration | `hopf_example.py` | Map S³ → S², engineered lift |
 | `geometry/` | Trefoil knot | `trefoil_knot_example.py`, `trefoil_knot_hero.py` | Hopf fibers, figures |
 | `geometry/` | Euler top (rigid body) | `euler_top_example.py` | Pure cross-product RHS — the minimal lift, stated exactly |
