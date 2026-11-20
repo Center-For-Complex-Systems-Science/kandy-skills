@@ -7,7 +7,7 @@ data-driven identification of dynamical systems (`x_dot = A · Ψ(φ(x))`).
 
 These skills teach coding agents how to use KANDy correctly: choosing Koopman
 lifts, training single-layer KANs, extracting symbolic governing equations, and
-generating finite-volume PDE training data — with runnable examples for a 40
+generating finite-volume PDE training data — with runnable examples for 40
 benchmark systems.
 
 ## Skills
@@ -96,18 +96,14 @@ skills/kandy/
 └── examples/             # complete, runnable scripts, grouped by fit recipe
     ├── odes/             # continuous ODEs + delay DEs (Lorenz, Hopf cross-term
                           #   and quadratic-obstruction demos, Van der Pol,
-                          #   Mackey–Glass,  …)
+                          #   Mackey–Glass, …)
     ├── maps/             # discrete maps (Hénon, Ikeda)
-    ├── oscillators/      # coupled phase oscillators (Kuramoto, network reconstruction,
-                          #   Kuramoto–Sakaguchi and slow-variable seizure fits
-                          #   to a measured recording, …)
-    ├── epilepsy/         # measured seizure recording: cross-frequency envelope
-                          #   models, diagnostics, and abstract interventions
-    ├── pdes/             # 1D PDEs (Burgers, Kuramoto–Sivashinsky,
-                          #   nonlocal dispersion)
+    ├── oscillators/      # coupled phase oscillators (Kuramoto, adaptive Kuramoto,
+                          #   network reconstruction)
+    ├── pdes/             # 1D PDEs (Burgers, Kuramoto–Sivashinsky)
     ├── fluids/           # fluid dynamics (vortex shedding, 2D turbulence, 3D Navier–Stokes)
     ├── plasma/           # MHD (Orszag–Tang, Brio–Wu shock tube, 2D MHD turbulence)
-    ├── mathbio/          # mathematical biology (SIR, Lotka–Volterra, Epileptor.
+    ├── mathbio/          # mathematical biology (SIR, Lotka–Volterra, Epileptor,
                           #   Hodgkin–Huxley, fMRI/DCM, …)
     └── geometry/         # engineered lifts on manifolds and Lie groups
                           #   (Hopf, trefoil, Euler top, Heisenberg, SE(2), …)

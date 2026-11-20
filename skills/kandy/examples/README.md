@@ -47,7 +47,7 @@ use the increment trick (`f(s) = map(s) − s`, Euler with dt=1).
 
 | Script | System | Highlights |
 |---|---|---|
-| `henon_example.py` | Hénon map | Minimal [x, y, x²] lift |
+| `henon_example.py` | Hénon map | Identity lift; the spline edge learns the `x²` term |
 | `ikeda_example.py` | Ikeda optical cavity | CustomLift with trig physics; rollout loss; physics-informed symbolic costs |
 
 ## `oscillators/` — coupled phase oscillators
@@ -94,7 +94,6 @@ side and the finite-volume discretisation cancels out of the identification.
 | `orszag_tang_example.py` | Orszag–Tang vortex, incompressible 2D MHD | Evolving `A` rather than `B` makes **`div(B) = 0` structural, not learned**; three *decoy* features that correlate with `dw/dt` at r ≈ 0.4 must go to zero; ν and η recovered separately (Pm = 0.4). Also the cleanest instance of the independence rule: `j` cannot be in the lift because `j = -lap(A)` exactly, and including it splits η across two columns at R² = 1 |
 | `brio_wu_shock_tube_example.py` | Brio–Wu MHD Riemann problem (compound wave) | Discovering the **flux function**, not the RHS: which of twelve candidate fluxes enters which conservation law, magnetic tension included. **A single Riemann problem is self-similar and therefore unidentifiable** (23× the coefficient error, decoys at 1.0) — fit an ensemble of tubes with varying `Bx`. Shock cells carry ~40× the residual and bias an MSE fit; validation re-runs the held-out tube with the discovered flux |
 | `mhd_2d_turbulence_example.py` | Decaying 2D MHD turbulence, subgrid EMF | Closure, not identification: the turbulent EMF is **not** a function of the resolved fields, so the deliverable is how much is locally closable (R² ≈ 0.96–0.98) and with what coefficient. Two rival closures share one lift — the gradient model wins, eddy resistivity alone reaches R² ≈ 0.11–0.20. Validated by a **scaling law**: the coefficient tracks Δ²/12 across a factor of 7 in Δ². Viscosity is set by a gated resolution check, since a subgrid term on an under-resolved grid measures the discretisation |
-
 | `heat_flux_closure_example.py` | 1D kinetic heat-flux closure | **A lift coordinate that is NONLOCAL** — a Hilbert transform of the whole profile, which no local derivative library can express at any order; the local-only ablation is ~370× worse. Divide out the known physics (`q_fs = T^{3/2}`, the Fourier floor) and fit the dimensionless closure, so the two KAN edges *are* the flux limiter and the nonlocal term: `a`, `z0`, `b` recovered to four digits, then exported as two lookup tables that drop back into the solver with no torch in the loop. Three traps, each measured: saturation is rare (stratify in `z`), `z` and `h` are correlated (broad-spectrum initial conditions separate them), and the knee needs knots finer than `z0`. Also the clearest instance of the chronological-split trap — stratified rows must be shuffled before `fit` |
 
 ## `mathbio/` — mathematical biology
@@ -105,8 +104,7 @@ demands.
 
 | Script | System | Highlights |
 |---|---|---|
-| `holling_type_ii_example.py` | Rosenzweig–MacArthur predator-prey | 21D physics library; Adam optimizer; *rational* functional response needs a hand-built lift |
-| `holling_mult_node_example.py` | Rosenzweig–MacArthur, nothing supplied | A separable lift is capped at R²=0.9376 on a product of two variables; one multiplication node breaks it, and alternating least squares reads the product term off the trained model — recovering *a* and *h*, which the oracle-lift version above is told |
+| `holling_mult_node_example.py` | Rosenzweig–MacArthur, nothing supplied | A separable lift is capped at R²=0.9376 on a product of two variables; one multiplication node breaks it, and alternating least squares reads the product term off the trained model — recovering *a* and *h* with neither supplied |
 | `sir_example.py` | SIR epidemic | The `S·I` cross-term lesson; why conservation laws (`S+I+R` const) make trajectory-only data non-identifiable |
 | `lotka_volterra_competition_example.py` | Two-species competition | Put cross-terms in the lift, NOT powers — why `PolynomialLift` gives the wrong symbolic answer here |
 | `fitzhugh_nagumo_example.py` | FitzHugh–Nagumo neuron | Identity lift (no cross-terms); edge-wise polynomial reconstruction when `auto_symbolic` structurally cannot snap the cubic |
@@ -120,7 +118,6 @@ demands.
 |---|---|---|
 | `hopf_example.py` | Hopf fibration S³ → S² | Engineered lift for a map between manifolds |
 | `trefoil_knot_example.py` | Trefoil knot via Hopf fibration | Knotted trajectory recovery |
-| `trefoil_knot_hero.py` | Trefoil hero figure | Publication figure generation |
 | `euler_top_example.py` | Free rigid body on SO(3) | The cross-term rule at its purest — the RHS is *nothing but* cross-products, so the minimal lift is exactly `[W2W3, W3W1, W1W2]`; conserves energy and angular momentum |
 | `heisenberg_example.py` | Sub-Riemannian geodesics on H¹ | The minimal counterexample to separability: `dz/dt = x·v − y·u` is a bare antisymmetric bilinear form |
 | `frenet_serret_example.py` | Frenet–Serret moving frame | 11D autonomous system carrying κ and τ as states; every RHS term is invariant × frame component |

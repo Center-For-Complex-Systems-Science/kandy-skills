@@ -117,8 +117,7 @@ same coefficients; a bilinear DCM `B` term would bend them.
 HONEST LIMITS.  The inversion assumes the hemodynamic model and its parameters
 are known and the neural model is linear — which is what DCM assumes too, and
 why DCM needs fixed hemodynamic priors.  Act 3 is therefore parameter
-estimation in a known model, in the same sense as
-`mathbio/holling_type_ii_example.py`, not free discovery.  Real fMRI
+estimation in a known model, not free discovery.  Real fMRI
 additionally brings unknown regional HRFs, physiological confounds, and far
 more noise than the 5% used here; A degrades roughly linearly with it
 (max|A - A_true| ~ 0.03 / 0.06 / 0.11 at 5 / 10 / 20% noise).

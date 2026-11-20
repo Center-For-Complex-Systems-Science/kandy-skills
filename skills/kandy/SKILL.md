@@ -137,13 +137,11 @@ measurement and fit in measurement space.
 | Polynomial RHS (Lorenz, Hénon, predator-prey) | `CustomLift` with states + cross-products only — see the corollary above. `PolynomialLift(degree=2)` is fine for fit quality but adds `x²`-type coordinates that corrupt symbolic extraction |
 | No cross-terms at all (FitzHugh–Nagumo, pendulum) | Identity `CustomLift(fn=lambda X: X, ...)` — the edges do the work |
 | Periodic PDE field u ∈ ℝᴺ (Burgers, KS) | `FourierLift(n_modes)` or local features via `CustomLift` |
-| PDE with a **nonlocal** term (Hilbert/fractional/convolution) | Put the operator itself in the lift as one coordinate. A local derivative ladder can approximate it on a band-limited grid, but conditioning collapses before it converges and the result is not a well-posed PDE (`pdes/benjamin_ono_nonlocal_example.py`, `plasma/heat_flux_closure_example.py`) |
+| PDE with a **nonlocal** term (Hilbert/fractional/convolution) | Put the operator itself in the lift as one coordinate, computed from the whole field snapshot. A local-only lift is ~370× worse (`plasma/heat_flux_closure_example.py`) |
 | Unknown structure, smooth | `RadialBasisLift(n_centers=50, center_method="kmeans")` |
 | Data-driven Koopman eigenfunctions | `DMDLift(n_modes, dictionary=PolynomialLift(2))` |
 | Scalar time series | `DelayEmbedding(delays)` |
 | Known physics terms (trig products, gates, coupling) | `CustomLift(fn, output_dim)` |
-| RHS is **multiplicative**, `x_dot_i = x_i·f(x)` (Lotka–Volterra, mass action, epidemics) on a strictly positive state | Change chart: fit `d(log x)/dt`, which is `f(x)` itself — the products become sums and the lift drops from `n(n+1)/2` to `n`. Declare the inverse `x = exp(u)` and integrate in `u` so positivity is structural (`mathbio/glv_log_lift_example.py`). Invalid if anything reaches zero |
-| RHS is a **ratio** whose denominator couples variables (mass-matrix inversion, coupled Hill terms) | Do not lift the reciprocal — you would have to invert it symbolically first. Fit the **implicit** form: carry `x_dot` in the input, regress each row on the others, one model per row (`odes/double_pendulum_implicit_example.py`) |
 
 Details and code for every lift: `references/lifts.md`.
 
@@ -220,14 +218,11 @@ category matching the data type, then the script closest to the target system:
 | `odes/` | x + sin(x) recovery | `sinx_recover_sine.py` | Restricted symbol library for clean `auto_symbolic` |
 | `odes/` | Mackey–Glass (delay DE) | `mackey_glass_delay_example.py` | `DelayEmbedding` on a scalar series; recovering the delay; splines learn the Hill term |
 | `odes/` | Koopman slow manifold | `koopman_slow_manifold_example.py` | `DMDLift`: data-derived Koopman coordinates; exact spectrum recovery; EDMD traps |
-| `maps/` | Hénon map | `henon_example.py` | Discrete map, [x, y, x²] lift |
+| `maps/` | Hénon map | `henon_example.py` | Discrete map, identity lift; the edge learns the `x²` term |
 | `maps/` | Ikeda map | `ikeda_example.py` | Custom trig physics lift + rollout loss |
 | `oscillators/` | Kuramoto | `kuramoto_example.py` | Independent pair-sine lift; effective linear readout |
 | `oscillators/` | Adaptive Kuramoto | `adaptive_kuramoto_example.py` | Kappa-trig product lift; separate phase/kappa models |
 | `oscillators/` | Network reconstruction | `network_reconstruction_example.py` | Recover adjacency; per-node regression; post-training pruning |
-| `oscillators/` | Kuramoto–Sakaguchi on measured data | `epilepsy_kuramoto_sakaguchi_fit.py` | **Real recording, not simulation.** Identifiable κ/α readout; guard-band split; every score quoted against a baseline; gates are margins, not constants |
-| `oscillators/` | Seizure as a regime change | `epilepsy_slow_variable_seizure_fit.py` | Slow variable drives ω through a bifurcation; emergence vs. a frozen-parameter control; specificity test; clip-support check |
-| `epilepsy/` | Abstract beta→delta intervention | `epilepsy_cross_frequency_dbs_intervention.py` | Starts from the saved cross-frequency envelope model; fits one beta→delta Heaviside residual term; sweeps direct RHS additive pulses and time-varying beta→delta gain pulses against the autonomous seizure threshold |
 | `pdes/` | Inviscid Burgers | `burgers_example.py`, `burgers_fourier_example.py` | FV data, flux-form lift |
 | `pdes/` | Kuramoto–Sivashinsky | `kuramoto_sivashinsky_example.py` | 12D local PDE features |
 | `fluids/` | Navier–Stokes (ABC flow) | `navier_stokes_example.py` | 3D vorticity/velocity lift |
@@ -238,8 +233,7 @@ category matching the data type, then the script closest to the target system:
 | `plasma/` | Brio–Wu shock tube | `brio_wu_shock_tube_example.py` | Discovering a *flux function*; one self-similar Riemann problem is unidentifiable — fit an ensemble; shock cells are outliers |
 | `plasma/` | 2D MHD turbulence | `mhd_2d_turbulence_example.py` | Subgrid EMF closure; rival closures in one lift; coefficient recovered as a Δ² *scaling law* |
 | `plasma/` | Kinetic heat-flux closure | `heat_flux_closure_example.py` | A **nonlocal** lift coordinate (Hilbert transform); additive edges *are* the closure terms; exported as lookup tables and reinserted into the solver |
-| `mathbio/` | Holling Type II | `holling_type_ii_example.py` | 21D physics library, Adam |
-| `mathbio/` | Holling Type II, no oracle | `holling_mult_node_example.py` | Multiplication node for a product cross-term; ALS reads that one term off when `auto_symbolic` cannot |
+| `mathbio/` | Holling Type II | `holling_mult_node_example.py` | Multiplication node for a product cross-term; ALS reads that one term off when `auto_symbolic` cannot |
 | `mathbio/` | SIR epidemic | `sir_example.py` | `S·I` cross-term; conservation laws break identifiability |
 | `mathbio/` | Lotka–Volterra competition | `lotka_volterra_competition_example.py` | Cross-terms in the lift, powers on the edges |
 | `mathbio/` | FitzHugh–Nagumo | `fitzhugh_nagumo_example.py` | Identity lift; edge-wise polynomial reconstruction |
@@ -247,7 +241,7 @@ category matching the data type, then the script closest to the target system:
 | `mathbio/` | Hodgkin–Huxley | `hodgkin_huxley_example.py` | Recovers biophysical constants; `m³h·V` triple product; grid-plateau diagnostic |
 | `mathbio/` | fMRI / DCM (BOLD) | `fmri_dcm_example.py` | **Nonlinear observation operator**: the state is latent. Balloon–Windkessel constants from edge *shapes*; fitting observed BOLD reverses the connectivity |
 | `geometry/` | Hopf fibration | `hopf_example.py` | Map S³ → S², engineered lift |
-| `geometry/` | Trefoil knot | `trefoil_knot_example.py`, `trefoil_knot_hero.py` | Hopf fibers, figures |
+| `geometry/` | Trefoil knot | `trefoil_knot_example.py` | Knotted trajectory on Hopf fibers |
 | `geometry/` | Euler top (rigid body) | `euler_top_example.py` | Pure cross-product RHS — the minimal lift, stated exactly |
 | `geometry/` | Heisenberg group H¹ | `heisenberg_example.py` | Minimal counterexample to separability: `x·v − y·u` |
 | `geometry/` | Frenet–Serret frame | `frenet_serret_example.py` | Bilinear moving frame; κ, τ carried as states |

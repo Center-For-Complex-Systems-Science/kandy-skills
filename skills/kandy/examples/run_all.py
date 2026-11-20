@@ -29,8 +29,8 @@ HERE = Path(__file__).resolve().parent
 RESULTS = HERE / "results"
 
 # Scripts that only draw figures from another example's work — not discovery
-# tasks, so they are run but not scored.
-NON_TASK_SCRIPTS = {"trefoil_knot_hero.py", "plasma_hero.py"}
+# tasks, so they are skipped.  None at present.
+NON_TASK_SCRIPTS: set[str] = set()
 
 
 def discover(categories: list[str] | None) -> list[Path]:

@@ -20,10 +20,9 @@ model and the ceiling on dN/dt is
     lift [N, pred]  (oracle)                               = 1.0000
 
 The ladder is the geometric series  a*N*P/(1+a*h*N) = a*NP - a^2*h*N^2P + ... :
-each extra cross-coordinate buys one term.  `mathbio/holling_type_ii_example.py`
-takes the oracle route — it supplies `pred` built from the TRUE a and h, and so
-recovers r, K, e, m but cannot be wrong about a or h.  This script recovers a
-and h too, supplying neither.
+each extra cross-coordinate buys one term.  The oracle route — supplying `pred`
+built from the TRUE a and h — recovers r, K, e, m but cannot be wrong about a
+or h.  This script recovers a and h too, supplying neither.
 
 THE FIX: ONE MULTIPLICATION NODE
 --------------------------------
