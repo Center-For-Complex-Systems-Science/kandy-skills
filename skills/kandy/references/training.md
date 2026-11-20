@@ -155,3 +155,35 @@ the differentiable torch integrators used inside the rollout loss;
   `plot_kan_architecture`. Call `use_pub_style()` for publication figures.
 - Rollout diverges → suspect a missing cross-term in the lift before touching
   optimizer settings (see references/lifts.md).
+
+## Stochastic data (SDEs)
+
+For `dX = f(X)dt + g(X)dW` the regression target does not exist: the increment
+rate `ΔX/Δt = f + g·ΔW/Δt` has standard deviation `~g/√Δt`, which **diverges**
+as `Δt → 0`. The conditional mean is still `f`, so least squares is consistent —
+but every habit from the deterministic examples inverts. Five rules, all
+measured in `mathbio/stochastic_logistic_sde_example.py`:
+
+- **Never use `fit(X, dt=...)`.** It fills `X_dot` with *central* differences,
+  and on an SDE that is catastrophic rather than merely noisy: the centred
+  target contains `ΔW_{n−1}`, which the regressor `x_n` also depends on. The
+  endogeneity biases the slope by `≈ σ²E[x]/(2Var x)`, which in that example is
+  `+0.99` against a true slope of `−1.0` — the fit reports **zero** interaction,
+  at every `Δt`, with no warning. Build forward differences and pass `X_dot`.
+- **Sampling faster makes it worse**, not better. SNR of the target went 0.035 →
+  0.366 as `Δt` went 0.002 → 0.2.
+- **What buys drift accuracy is total observed time `T`, not sample count.**
+  Error is `~1/√T` and nearly flat across a 25× change in `Δt`. Independent
+  replicate paths count toward `T`, so many short runs are fine.
+- **Diffusion has the opposite preference**: `σ²` comes from the quadratic
+  variation `E[(ΔX)²]/Δt`, consistent as `Δt → 0` at fixed `T`. Fit it with a
+  second model; a flat edge means state-independent diffusion.
+- **R² is near zero for the correct model** — 0.012 against the target there,
+  because the drift is ~1% of its variance and the rest is Brownian by
+  construction. Score against the recovered coefficients, and set
+  `r2_threshold=0.0` in `get_formula` or the default 0.80 rejects every edge.
+
+Validate by **distribution, not trajectory**: two realisations from the same
+initial condition diverge immediately. Simulate the fitted SDE and compare
+invariant laws against a calibrated null, as `_utils.attractor_tv` does for
+chaotic orbits.

@@ -137,10 +137,13 @@ measurement and fit in measurement space.
 | Polynomial RHS (Lorenz, Hénon, predator-prey) | `CustomLift` with states + cross-products only — see the corollary above. `PolynomialLift(degree=2)` is fine for fit quality but adds `x²`-type coordinates that corrupt symbolic extraction |
 | No cross-terms at all (FitzHugh–Nagumo, pendulum) | Identity `CustomLift(fn=lambda X: X, ...)` — the edges do the work |
 | Periodic PDE field u ∈ ℝᴺ (Burgers, KS) | `FourierLift(n_modes)` or local features via `CustomLift` |
+| PDE with a **nonlocal** term (Hilbert/fractional/convolution) | Put the operator itself in the lift as one coordinate. A local derivative ladder can approximate it on a band-limited grid, but conditioning collapses before it converges and the result is not a well-posed PDE (`pdes/benjamin_ono_nonlocal_example.py`, `plasma/heat_flux_closure_example.py`) |
 | Unknown structure, smooth | `RadialBasisLift(n_centers=50, center_method="kmeans")` |
 | Data-driven Koopman eigenfunctions | `DMDLift(n_modes, dictionary=PolynomialLift(2))` |
 | Scalar time series | `DelayEmbedding(delays)` |
 | Known physics terms (trig products, gates, coupling) | `CustomLift(fn, output_dim)` |
+| RHS is **multiplicative**, `x_dot_i = x_i·f(x)` (Lotka–Volterra, mass action, epidemics) on a strictly positive state | Change chart: fit `d(log x)/dt`, which is `f(x)` itself — the products become sums and the lift drops from `n(n+1)/2` to `n`. Declare the inverse `x = exp(u)` and integrate in `u` so positivity is structural (`mathbio/glv_log_lift_example.py`). Invalid if anything reaches zero |
+| RHS is a **ratio** whose denominator couples variables (mass-matrix inversion, coupled Hill terms) | Do not lift the reciprocal — you would have to invert it symbolically first. Fit the **implicit** form: carry `x_dot` in the input, regress each row on the others, one model per row (`odes/double_pendulum_implicit_example.py`) |
 
 Details and code for every lift: `references/lifts.md`.
 
@@ -156,7 +159,7 @@ Details and code for every lift: `references/lifts.md`.
 - **Rollout loss** for multi-step accuracy: `fit_kan(..., rollout_weight=0.6,
   rollout_horizon=15, dynamics_fn=..., integrator="rk4")`.
 - **Stiff systems**: the loss is an unweighted MSE across equations, so a slow
-  variable whose derivative is orders of magnitude smaller is simply not
+  variable whose derivative is orders of magnitude smaller can be badly under-
   fitted. Fit on `X_dot / X_dot.std(0)` and rescale the formulas afterwards.
 
 Full options: `references/training.md`.

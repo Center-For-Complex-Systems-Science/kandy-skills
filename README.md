@@ -7,7 +7,7 @@ data-driven identification of dynamical systems (`x_dot = A · Ψ(φ(x))`).
 
 These skills teach coding agents how to use KANDy correctly: choosing Koopman
 lifts, training single-layer KANs, extracting symbolic governing equations, and
-generating finite-volume PDE training data — with runnable examples for a dozen
+generating finite-volume PDE training data — with runnable examples for a 40
 benchmark systems.
 
 ## Skills
@@ -33,6 +33,34 @@ Or from the terminal:
 claude plugin marketplace add Center-For-Complex-Systems-Science/kandy-skills
 claude plugin install kandy@kandy-skills
 ```
+
+  ### Codex
+
+  Codex reads the same `SKILL.md` format. Clone the repo and copy the skill
+  into a directory Codex scans:
+
+  ```bash
+  git clone https://github.com/Center-For-Complex-Systems-Science/kandy-skills
+
+  # User-level (available in all your projects)
+  mkdir -p ~/.agents/skills
+  cp -r kandy-skills/skills/kandy ~/.agents/skills/
+
+  # Or project-level (run from your project root; shared via git)
+  mkdir -p .agents/skills
+  cp -r kandy-skills/skills/kandy .agents/skills/
+  ```
+
+  To track updates with `git pull`, symlink instead of copying:
+
+  ```bash
+  ln -s "$(pwd)/kandy-skills/skills/kandy" ~/.agents/skills/kandy
+  ```
+
+  Codex picks up new skills automatically; restart it if `kandy` does not
+  appear. Run `/skills` to list skills, or type `$kandy` to invoke it
+  explicitly. Otherwise Codex loads it when a task matches the description.
+
 
 ### Manual copy
 
@@ -68,17 +96,18 @@ skills/kandy/
 └── examples/             # complete, runnable scripts, grouped by fit recipe
     ├── odes/             # continuous ODEs + delay DEs (Lorenz, Hopf cross-term
                           #   and quadratic-obstruction demos, Van der Pol,
-                          #   Mackey–Glass, …)
+                          #   Mackey–Glass,  …)
     ├── maps/             # discrete maps (Hénon, Ikeda)
     ├── oscillators/      # coupled phase oscillators (Kuramoto, network reconstruction,
                           #   Kuramoto–Sakaguchi and slow-variable seizure fits
                           #   to a measured recording, …)
     ├── epilepsy/         # measured seizure recording: cross-frequency envelope
                           #   models, diagnostics, and abstract interventions
-    ├── pdes/             # 1D PDEs (Burgers, Kuramoto–Sivashinsky)
+    ├── pdes/             # 1D PDEs (Burgers, Kuramoto–Sivashinsky,
+                          #   nonlocal dispersion)
     ├── fluids/           # fluid dynamics (vortex shedding, 2D turbulence, 3D Navier–Stokes)
     ├── plasma/           # MHD (Orszag–Tang, Brio–Wu shock tube, 2D MHD turbulence)
-    ├── mathbio/          # mathematical biology (SIR, Lotka–Volterra, Epileptor,
+    ├── mathbio/          # mathematical biology (SIR, Lotka–Volterra, Epileptor.
                           #   Hodgkin–Huxley, fMRI/DCM, …)
     └── geometry/         # engineered lifts on manifolds and Lie groups
                           #   (Hopf, trefoil, Euler top, Heisenberg, SE(2), …)

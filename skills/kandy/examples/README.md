@@ -59,14 +59,6 @@ Periodic phases need `angle_mse` rollout loss so errors wrap to (−π, π].
 | `kuramoto_example.py` | Kuramoto oscillators | Independent pair-sine lift; effective linear readout |
 | `adaptive_kuramoto_example.py` | Adaptive Kuramoto–Sakaguchi | Kappa-trig product lift; separate phase/kappa models |
 | `network_reconstruction_example.py` | Kuramoto on a sparse graph | **Recovering the adjacency matrix**: one regression per node, edge amplitude = coupling strength, post-training pruning. Assuming the wrong coupling function invents *false edges*; a phase-locked network is unidentifiable |
-| `epilepsy_slow_variable_seizure_fit.py` | Intracranial recording, seizure | **A seizure is a regime change, so the model needs a slow variable.** Constant-ω oscillators structurally cannot have an event; ω is promoted to a state driven by a slow coordinate z (Epileptor structure). Tests *emergence* (autonomous rollout from a pre-ictal IC against a frozen-parameter control) and *specificity* (does it seize from everywhere?), since with one seizure there is no out-of-sample event. Also shows the clip-support check that tells you whether a bounded rollout is dynamics or a clamp |
-| `epilepsy_kuramoto_sakaguchi_fit.py` | Intracranial recording (`data/`) | **Fitting measured data honestly.** Two sin/cos columns per unordered pair make κ and α identifiable in closed form; `off_structure_fraction` tests the Kuramoto–Sakaguchi hypothesis itself; chronological split with a guard band wider than the smoothing support; ω-only, linear and persistence baselines on the same rows; gates are margins over a baseline. `KANDY_KS_SPLIT_MODE=event_holdout` trains off-seizure and tests on it |
-
-## `epilepsy/` — measured seizure recording, envelope models and interventions
-
-| Script | System | Highlights |
-|---|---|---|
-| `epilepsy_cross_frequency_dbs_intervention.py` | Abstract beta→delta intervention on the cross-frequency envelope model | Adds two pulse controls to the saved cross-frequency model: a direct RHS additive beta→delta Heaviside term and a time-varying gain on the beta→delta target-map term. Fits only the beta→delta residual coefficient, then sweeps pulse start/amplitude and reports whether any viable rollout falls below the seizure threshold |
 
 ## `pdes/` — partial differential equations
 
