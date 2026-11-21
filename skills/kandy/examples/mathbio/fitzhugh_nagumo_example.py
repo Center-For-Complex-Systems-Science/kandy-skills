@@ -53,6 +53,8 @@ KAN:  width = [2, 2],  base_fun='zero'
 """
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import sympy as sp
 import torch
@@ -62,6 +64,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
 from kandy import KANDy, CustomLift
 from kandy.plotting import (
     get_edge_activation,
@@ -70,6 +76,7 @@ from kandy.plotting import (
     plot_loss_curves,
     use_pub_style,
 )
+from _utils import ensure_outdir, print_check, save_metrics
 
 # ---------------------------------------------------------------------------
 # 0. Reproducibility and parameters
@@ -151,6 +158,7 @@ with torch.no_grad():
 
 print(f"\n[SYMBOLIC] Edge-wise polynomial reconstruction (degree {POLY_DEGREE}):")
 recovered = []
+edge_sum_max_err = 0.0
 for j in range(len(FEATURE_NAMES)):
     expr = sp.Integer(0)
     recon = np.zeros(len(theta_t))
@@ -171,8 +179,15 @@ for j in range(len(FEATURE_NAMES)):
                     for k in range(POLY_DEGREE + 1))
 
     # The single-layer KAN output is exactly the sum of its edges — verify it.
+    # Relative to the spread of this output, so the tolerance means the same
+    # thing for dv/dt (range ~4) and dw/dt (range ~0.1).  Note this residual
+    # includes the degree-3 polynomial fit error on each edge, not just the
+    # sum-of-edges identity itself.
     max_err = np.abs(recon - model_out[:, j]).max()
-    print(f"    sum of edges vs network output: max |diff| = {max_err:.2e}")
+    rel_err = float(max_err / max(np.ptp(model_out[:, j]), 1e-12))
+    edge_sum_max_err = max(edge_sum_max_err, rel_err)
+    print(f"    sum of edges vs network output: max |diff| = {max_err:.2e} "
+          f"({100 * rel_err:.4f}% of output range)")
     recovered.append(sp.nsimplify(sp.expand(expr), rational=False, tolerance=1e-3))
 
 for lab, e in zip(["dv/dt", "dw/dt"], recovered):
@@ -206,14 +221,55 @@ def spike_count(v, thresh=1.0):
     return int(np.sum(above[1:] & ~above[:-1]))
 
 
+spikes_true = spike_count(true_traj[:, 0])
+spikes_pred = spike_count(pred_traj[:, 0])
 print(f"[EVAL]  Spikes over {T_MAX:g} time units — "
-      f"true {spike_count(true_traj[:, 0])}, KANDy {spike_count(pred_traj[:, 0])}")
+      f"true {spikes_true}, KANDy {spikes_pred}")
+
+# ---------------------------------------------------------------------------
+# 5b. Verification
+#
+#     Spike COUNT, not rollout RMSE, is the limit-cycle criterion: a small
+#     period error accumulates into phase drift, so RMSE grows with time on an
+#     orbit that is otherwise exactly right.  The edge-sum residual is also
+#     gated — it is the numerical statement that a single-layer KAN output is
+#     exactly the sum of its edges, which is what makes the edge-wise
+#     polynomial reconstruction legitimate in the first place.
+# ---------------------------------------------------------------------------
+THRESHOLDS = {
+    "network_r2_min": 0.999,
+    "edge_sum_max_err_max": 1e-3,   # sum of edges == KAN output, to 0.1% of range
+    "formula_r2_min": 0.99,
+    "spike_count_abs_err_max": 1,
+}
+passed = print_check(
+    min(raw_r2) >= THRESHOLDS["network_r2_min"]
+    and edge_sum_max_err <= THRESHOLDS["edge_sum_max_err_max"]
+    and float(np.min(r2)) >= THRESHOLDS["formula_r2_min"]
+    and abs(spikes_pred - spikes_true) <= THRESHOLDS["spike_count_abs_err_max"],
+    "FitzHugh-Nagumo edge-wise reconstruction and spiking rollout",
+)
+RESULT_DIR = ensure_outdir("results/FitzHughNagumo")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "FitzHughNagumo",
+    "category": "mathbio",
+    "seed": SEED,
+    "n_train": N_SAMPLES,
+    "sampling": "uniform box + true RHS (oracle derivatives)",
+    "network_r2": [float(v) for v in raw_r2],
+    "edge_sum_max_rel_err": edge_sum_max_err,
+    "formula_r2": np.asarray(r2).tolist(),
+    "spikes_true": spikes_true,
+    "spikes_pred": spikes_pred,
+    "rollout_rmse": float(rmse),
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
 
 # ---------------------------------------------------------------------------
 # 6. Figures
 # ---------------------------------------------------------------------------
 use_pub_style()
-os.makedirs("results/FitzHughNagumo", exist_ok=True)
 
 # 6a. Voltage and recovery traces
 fig, axes = plt.subplots(2, 1, figsize=(9, 5), sharex=True)

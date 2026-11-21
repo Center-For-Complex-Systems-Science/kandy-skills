@@ -42,6 +42,8 @@ KAN:  width = [80, 2],  base_fun='zero'
 """
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
@@ -50,12 +52,17 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
 from kandy import KANDy, CustomLift, RadialBasisLift
 from kandy.plotting import (
     plot_trajectory_error,
     plot_loss_curves,
     use_pub_style,
 )
+from _utils import ensure_outdir, print_check, save_metrics
 
 # ---------------------------------------------------------------------------
 # 0. Reproducibility and parameters
@@ -182,10 +189,63 @@ print("[EVAL]  No symbolic extraction: RBF features are anonymous bumps, so a "
       "formula\n        in terms of them would not be physically meaningful.")
 
 # ---------------------------------------------------------------------------
+# 4b. Verification
+#
+#     Two-sided, because the example's claim is a CONTRAST.  The identity lift
+#     must fail on dy/dt — if it ever passed, the separability obstruction this
+#     script exists to demonstrate would not be being demonstrated — and the RBF
+#     lift must succeed.  Rollout RMSE is recorded but deliberately NOT gated:
+#     on a limit cycle a small period error accumulates into phase drift, so
+#     RMSE grows with time even when the orbit is exactly right.  Amplitude and
+#     period are the orbit-level criteria instead.
+# ---------------------------------------------------------------------------
+amp_rel_err = float(abs(amp_p - amp_t) / amp_t)
+per_rel_err = float(abs(per_p - per_t) / per_t)
+#     Amplitude is held tighter than period on purpose.  An RBF lift buys
+#     "works without knowing the RHS" at the cost of precision — it interpolates
+#     the vector field rather than representing it exactly, and a small
+#     systematic bias in the field integrates into a period offset while barely
+#     moving the orbit's extent.  The claim being tested is that the limit cycle
+#     is qualitatively right, so 5% on amplitude and 10% on period.
+THRESHOLDS = {
+    "identity_dydt_r2_max": 0.60,   # the cross-term is out of reach: must FAIL
+    "rbf_r2_min": 0.95,
+    "amplitude_rel_err_max": 0.05,
+    "period_rel_err_max": 0.10,
+}
+passed = print_check(
+    base_r2[1] <= THRESHOLDS["identity_dydt_r2_max"]
+    and min(rbf_r2) >= THRESHOLDS["rbf_r2_min"]
+    and amp_rel_err <= THRESHOLDS["amplitude_rel_err_max"]
+    and per_rel_err <= THRESHOLDS["period_rel_err_max"],
+    "Van der Pol: identity lift fails, RBF lift recovers the limit cycle",
+)
+RESULT_DIR = ensure_outdir("results/VanDerPolRBF")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "VanDerPolRBF",
+    "category": "odes",
+    "seed": SEED,
+    "mu": MU,
+    "n_train": N_SAMPLES,
+    "n_centers": N_CENTERS,
+    "sampling": "uniform box + true RHS (oracle derivatives)",
+    "identity_lift_r2": [float(v) for v in base_r2],
+    "rbf_lift_r2": [float(v) for v in rbf_r2],
+    "amplitude_true": float(amp_t),
+    "amplitude_pred": float(amp_p),
+    "amplitude_rel_err": amp_rel_err,
+    "period_true": float(per_t),
+    "period_pred": float(per_p),
+    "period_rel_err": per_rel_err,
+    "rollout_rmse": float(rmse),
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
+
+# ---------------------------------------------------------------------------
 # 5. Figures
 # ---------------------------------------------------------------------------
 use_pub_style()
-os.makedirs("results/VanDerPolRBF", exist_ok=True)
 
 # 5a. Phase portrait with the RBF centres overlaid
 fig, ax = plt.subplots(figsize=(5.5, 5))

@@ -21,12 +21,18 @@ We also show the sech² curve fit for the shock edge activation.
 """
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
 
 from kandy import KANDy, CustomLift, solve_burgers
 from kandy.numerics import muscl_reconstruct, burgers_flux, burgers_speed
@@ -35,10 +41,10 @@ from kandy.plotting import (
     plot_edge,
     plot_all_edges,
     plot_loss_curves,
-    fit_sech2,
     fit_linear,
     use_pub_style,
 )
+from _utils import ensure_outdir, fit_sech2, print_check, save_metrics
 
 # ---------------------------------------------------------------------------
 # 0. Reproducibility / parameters
@@ -137,18 +143,15 @@ model.fit(
 )
 
 # ---------------------------------------------------------------------------
-# 4. Symbolic extraction
-# ---------------------------------------------------------------------------
-print("\n[SYMBOLIC] Extracting formula for u_t ...")
-try:
-    formulas = model.get_formula(var_names=FEATURE_NAMES, round_places=2)
-    print(f"  u_t = {formulas[0]}")
-    # Expect something close to: -d(u²/2)/dx  (coefficient ≈ -1)
-except Exception as exc:
-    print(f"  Symbolic extraction failed: {exc}")
-
-# ---------------------------------------------------------------------------
-# 5. Evaluation
+# 4. Evaluation
+#
+#    ORDERING: symbolic extraction moved to the END of this script.  It used to
+#    run here, and everything below — test MSE, the linear readout, the rollout,
+#    the edge plots — would then have been measuring the snapped surrogate that
+#    get_formula() writes into the model in place, not the trained network.  The
+#    sibling pdes/burgers_fourier_example.py had the same ordering and there the
+#    snap collapsed the model to ~0, so its reported rollout RMSE was an
+#    artefact.  Same recipe, same bug, wildly different visibility.
 # ---------------------------------------------------------------------------
 N_total = len(Theta)
 n_test  = int(N_total * 0.15)
@@ -211,11 +214,87 @@ rmse_roll = np.sqrt(np.mean((pred_roll - true_roll) ** 2))
 print(f"[EVAL]  Rollout RMSE (T={n_roll} steps): {rmse_roll:.6f}")
 
 # ---------------------------------------------------------------------------
+# 6b. Verification
+#
+#     The physics claim is a single number.  Inviscid Burgers in flux form is
+#     u_t = -d(u^2/2)/dx exactly, so the linear readout onto the three lifted
+#     features must be [0, 0, -1]: all the weight on the flux-derivative
+#     feature, none on u or u_x.  A model that scored well on MSE while putting
+#     weight on u_x would have learned a numerically convenient diffusion, not
+#     the conservation law — which is why the OFF-feature weights are gated
+#     separately rather than folded into one error.
+# ---------------------------------------------------------------------------
+A_hat, *_ = np.linalg.lstsq(Theta, model.predict(Theta), rcond=None)
+A_hat = A_hat.ravel()
+flux_coef = float(A_hat[2])
+off_feature_max = float(np.abs(A_hat[:2]).max())
+print(f"[EVAL]  Linear readout onto {FEATURE_NAMES}: {np.round(A_hat, 4)}")
+print(f"[EVAL]  flux coefficient {flux_coef:+.4f} (true -1), "
+      f"largest off-feature weight {off_feature_max:.4f} (true 0)")
+
+r2_test = float(
+    1.0 - np.sum((Ut_test.ravel() - Ut_pred.ravel()) ** 2)
+    / np.sum((Ut_test.ravel() - Ut_test.mean()) ** 2)
+)
+rollout_finite = bool(np.all(np.isfinite(pred_roll)))
+print(f"[EVAL]  Held-out R^2 on u_t: {r2_test:.6f}   "
+      f"rollout stayed finite: {rollout_finite}")
+
+#     Two notes on the tolerances, both measured rather than assumed.
+#
+#     The flux coefficient lands near -0.92, not -1.  That 8% deficit is NOT a
+#     shock artefact: restricting the readout to smooth cells (|u_x| below the
+#     95th percentile) gives -0.9203 against -0.9223 on all cells, i.e. the
+#     shrinkage is uniform in space.  It is a discretisation inconsistency —
+#     the target u_t and the feature d(u^2/2)/dx are built by different
+#     numerical operators, so the best linear map between them has slope
+#     slightly under one everywhere.  The tolerance is set to admit that while
+#     still catching a sign error or a factor-of-two.
+#
+#     Pointwise R^2 on u_t is recorded but NOT gated.  It moves non-monotonically
+#     with how many shock cells are included (0.76 on all cells, 0.95 excluding
+#     the top 5% of |u_x|, 0.93 excluding the top 10%), so no single value of it
+#     means anything stable.  The rollout is the criterion that matters for a
+#     PDE emulator, and it is gated tightly.
+THRESHOLDS = {
+    "flux_coef_abs_err_max": 0.15,     # u_t = -d(u^2/2)/dx, up to FV mismatch
+    "off_feature_weight_max": 0.05,    # no spurious u or u_x term
+    "rollout_rmse_max": 0.05,
+    "rollout_must_stay_finite": True,
+}
+passed = print_check(
+    abs(flux_coef - (-1.0)) <= THRESHOLDS["flux_coef_abs_err_max"]
+    and off_feature_max <= THRESHOLDS["off_feature_weight_max"]
+    and rollout_finite
+    and rmse_roll <= THRESHOLDS["rollout_rmse_max"],
+    "Burgers flux-form coefficient and shock rollout",
+)
+RESULT_DIR = ensure_outdir("results/Burgers")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "Burgers",
+    "category": "pdes",
+    "seed": SEED,
+    "n_x": N_X,
+    "dt": DT,
+    "sampling": "finite-volume trajectory (MUSCL + Rusanov)",
+    "feature_names": FEATURE_NAMES,
+    "linear_readout": A_hat.tolist(),
+    "flux_coefficient": flux_coef,
+    "off_feature_weight_max": off_feature_max,
+    "test_r2": r2_test,                # recorded, not gated — see note above
+    "test_mse": float(mse),
+    "rollout_rmse": float(rmse_roll),
+    "rollout_finite": rollout_finite,
+    "rollout_steps": int(n_roll),
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
+
+# ---------------------------------------------------------------------------
 # 7. Figures
 # ---------------------------------------------------------------------------
 use_pub_style()
-RESULTS = "results/Burgers"
-os.makedirs(RESULTS, exist_ok=True)
+RESULTS = str(ensure_outdir("results/Burgers"))
 
 # 7a. Space-time comparison
 fig, axes = plt.subplots(1, 2, figsize=(10, 4))
@@ -272,3 +351,19 @@ if hasattr(model, "train_results_") and model.train_results_:
     plt.close(fig)
 
 print(f"[FIGS]  Saved {RESULTS}/")
+
+# ---------------------------------------------------------------------------
+# 8. Symbolic extraction  (LAST — get_formula mutates the model in place)
+#
+#     Nothing may be measured or plotted after this line.
+# ---------------------------------------------------------------------------
+print("\n[SYMBOLIC] Extracting formula for u_t ...")
+try:
+    formulas = model.get_formula(var_names=FEATURE_NAMES, round_places=2)
+    print(f"  u_t   = {formulas[0]}")
+    print("  [TRUE] u_t = -d(u^2/2)/dx")
+    A_snap, *_ = np.linalg.lstsq(Theta, model.predict(Theta), rcond=None)
+    print(f"  readout AFTER snapping: {np.round(A_snap.ravel(), 4)}  "
+          f"(before: {np.round(A_hat, 4)})")
+except Exception as exc:
+    print(f"  Symbolic extraction failed: {exc}")

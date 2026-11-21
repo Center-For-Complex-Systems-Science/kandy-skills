@@ -41,6 +41,8 @@ KAN:  width = [3, 2],  base_fun='zero'
 """
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import sympy as sp
 import torch
@@ -50,6 +52,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
+from _utils import ensure_outdir, print_check, save_metrics
 from kandy import KANDy, CustomLift
 from kandy.plotting import (
     plot_all_edges,
@@ -210,10 +217,48 @@ print(f"[SYMBOLIC] True:  dN1/dt = {R1}*N1 - {R1 / K1:.3f}*N1**2 - {R1 * A12 / K
 print(f"[SYMBOLIC]        dN2/dt = {R2}*N2 - {R2 / K2:.3f}*N2**2 - {R2 * A21 / K2:.3f}*N1*N2")
 
 # ---------------------------------------------------------------------------
+# 5b. Verification
+#
+#     The rollout is gated on where it ENDS UP, not on pointwise error: the
+#     system relaxes to a coexistence fixed point, so landing on (N1*, N2*) is
+#     the dynamically meaningful statement.  Both are recorded.
+# ---------------------------------------------------------------------------
+equilibrium_err = float(max(abs(pred_traj[-1, 0] - N1_EQ),
+                            abs(pred_traj[-1, 1] - N2_EQ)))
+THRESHOLDS = {
+    "network_r2_min": 0.999,
+    "formula_r2_min": 0.99,
+    "rollout_rmse_max": 0.05,
+    "equilibrium_abs_err_max": 0.02,
+}
+passed = print_check(
+    min(raw_r2) >= THRESHOLDS["network_r2_min"]
+    and float(np.min(r2)) >= THRESHOLDS["formula_r2_min"]
+    and rmse <= THRESHOLDS["rollout_rmse_max"]
+    and equilibrium_err <= THRESHOLDS["equilibrium_abs_err_max"],
+    "Lotka-Volterra competition: cross-term recovered, coexistence reached",
+)
+RESULT_DIR = ensure_outdir("results/LotkaVolterraCompetition")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "LotkaVolterraCompetition",
+    "category": "mathbio",
+    "seed": SEED,
+    "n_train": N_SAMPLES,
+    "sampling": "uniform box + true RHS (oracle derivatives)",
+    "network_r2": [float(v) for v in raw_r2],
+    "formula_r2": np.asarray(r2).tolist(),
+    "rollout_rmse": float(rmse),
+    "equilibrium_true": [float(N1_EQ), float(N2_EQ)],
+    "equilibrium_pred": [float(pred_traj[-1, 0]), float(pred_traj[-1, 1])],
+    "equilibrium_abs_err": equilibrium_err,
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
+
+# ---------------------------------------------------------------------------
 # 6. Figures
 # ---------------------------------------------------------------------------
 use_pub_style()
-os.makedirs("results/LotkaVolterraCompetition", exist_ok=True)
 
 # 6a. Time series
 fig, ax = plt.subplots(figsize=(9, 4))

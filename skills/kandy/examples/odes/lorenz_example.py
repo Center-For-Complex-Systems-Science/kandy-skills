@@ -14,6 +14,8 @@ needs to learn separable univariate functions of each lifted feature.
 """
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
@@ -21,6 +23,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
+
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
 
 from kandy import KANDy, CustomLift
 from kandy.plotting import (
@@ -31,6 +37,7 @@ from kandy.plotting import (
     plot_loss_curves,
     use_pub_style,
 )
+from _utils import ensure_outdir, print_check, save_metrics
 
 # ---------------------------------------------------------------------------
 # 0. Reproducibility
@@ -96,12 +103,18 @@ lift = CustomLift(fn=lorenz_lift, output_dim=6, name="lorenz_lift")
 # ---------------------------------------------------------------------------
 # 3. KANDy model  (single-layer KAN: width=[6, 3])
 # ---------------------------------------------------------------------------
+# base_fun='zero' gives a PURE spline model.  The default SiLU base adds a
+# non-spline component to every edge that auto_symbolic cannot represent, and
+# it leaks into the extracted constants: with the default, x_dot comes out as
+# -6.95*x + 9.67*y + (spurious z, xy and constant terms) instead of the exact
+# -10*x + 10*y below.  Use 'zero' whenever the goal is a readable formula.
 model = KANDy(
     lift=lift,
     grid=5,
     k=3,
     steps=500,
     seed=SEED,
+    base_fun="zero",
 )
 
 model.fit(
@@ -113,19 +126,11 @@ model.fit(
 )
 
 # ---------------------------------------------------------------------------
-# 4. Symbolic extraction
-# ---------------------------------------------------------------------------
-print("\n[SYMBOLIC] Extracting formulas ...")
-try:
-    formulas = model.get_formula(var_names=FEATURE_NAMES, round_places=2)
-    labels = ["x_dot", "y_dot", "z_dot"]
-    for lab, f in zip(labels, formulas):
-        print(f"  {lab} = {f}")
-except Exception as exc:
-    print(f"  Symbolic extraction failed: {exc}")
-
-# ---------------------------------------------------------------------------
-# 5. Rollout validation
+# 4. Rollout validation
+#
+#    Run this BEFORE get_formula(): auto_symbolic rewrites the model's spline
+#    edges in place, so a rollout afterwards would test the snapped surrogate
+#    rather than the trained network.
 # ---------------------------------------------------------------------------
 # Use the final 20 % of data as the test window
 N        = len(X)
@@ -138,12 +143,105 @@ pred_traj = model.rollout(x0_test, T=T_test, dt=DT, integrator="rk4")
 
 rmse = np.sqrt(np.mean((pred_traj - true_traj) ** 2))
 print(f"\n[EVAL]  Rollout RMSE (T={T_test} steps): {rmse:.6f}")
+print("[EVAL]  Lorenz is chaotic: pointwise RMSE grows once trajectories "
+      "decorrelate.\n        Judge the attractor overlay, not this number.")
+
+# Edge inputs captured before snapping, for the figure below
+train_theta = torch.tensor(lorenz_lift(X[: int(N * 0.70)]), dtype=torch.float32)
+
+# Linear readout of the TRAINED network onto the lifted features.  This must
+# also happen before get_formula(), which replaces every spline edge with its
+# symbolic surrogate in place.
+#
+#     x_dot = -10 x + 10 y
+#     y_dot =  28 x -  1 y - xz
+#     z_dot =        -8/3 z + xy
+A_TRUE = np.array([
+    [-SIGMA, SIGMA,  0.0,  0.0,  0.0, 0.0],
+    [   RHO,  -1.0,  0.0,  0.0, -1.0, 0.0],
+    [   0.0,   0.0, -BETA, 1.0,  0.0, 0.0],
+])
+A_hat, *_ = np.linalg.lstsq(model.lift(X), model.predict(X), rcond=None)
+A_hat = A_hat.T
+coef_abs_err = float(np.abs(A_hat - A_TRUE).max())
+print(f"[EVAL]  max |A_hat - A_true| over all 18 coefficients: {coef_abs_err:.4f}")
 
 # ---------------------------------------------------------------------------
-# 6. Figures
+# 5. Symbolic extraction
+#
+#    Every Lorenz term is LINEAR in the lifted features, so restrict the
+#    library to ["x", "0"].  With the default library the snapper fits
+#    spurious quadratics to the near-zero edges; with the default
+#    weight_simple=0.8 it discards real edges as "too complex".
+# ---------------------------------------------------------------------------
+print("\n[SYMBOLIC] Extracting formulas ...")
+formulas = model.get_formula(
+    var_names=FEATURE_NAMES, round_places=3,
+    lib=["x", "0"], r2_threshold=0.80, weight_simple=0.0,
+)
+for lab, f in zip(["x_dot", "y_dot", "z_dot"], formulas):
+    print(f"  {lab} = {f}")
+
+r2 = model.score_formula(formulas, X, X_dot, var_names=FEATURE_NAMES)
+print(f"[SYMBOLIC] Formula R^2 per equation: {np.round(r2, 6)}")
+print(f"[SYMBOLIC] True:  x_dot = {SIGMA}*y - {SIGMA}*x     "
+      f"y_dot = {RHO}*x - y - xz     z_dot = xy - {BETA:.3f}*z")
+
+# Trajectory data lives ON the attractor, a thin set in R^3, so the lifted
+# features are strongly correlated and the constants are only weakly
+# identifiable — z_dot suffers most.  The diagnostic is the condition number;
+# sampling states over a box instead (as in mathbio/sir_example.py) drives it
+# down and sharpens every coefficient.
+cond = np.linalg.cond(np.column_stack([lorenz_lift(X), np.ones(len(X))]))
+print(f"[SYMBOLIC] cond(Theta) = {cond:.0f} on attractor data "
+      f"(high => coefficients only weakly identifiable)")
+
+# ---------------------------------------------------------------------------
+# 6. Verification
+#
+#    Rollout RMSE is NOT the criterion here — Lorenz is chaotic and any
+#    pointwise error grows once trajectories decorrelate.  What must be right
+#    is the STRUCTURE: the coefficient readout computed above, plus the
+#    symbolic formulas scoring on held-out derivatives.
+# ---------------------------------------------------------------------------
+#     The two criteria test different things and the gap between them is the
+#     point.  The COEFFICIENT check tests what the network learned, and it is
+#     tight.  The SYMBOLIC check is deliberately looser: this example trains on
+#     attractor data, where cond(Theta) ~ 1e3 leaves the constants only weakly
+#     identifiable, and z_dot degrades most (its xy coefficient comes out near
+#     0.86 rather than 1.0, plus a spurious offset).  That degradation is a
+#     documented property of the sampling, not a regression — sample over a box
+#     instead, as mathbio/sir_example.py does, and it goes away.
+r2_min = float(np.min(r2))
+THRESHOLDS = {
+    "formula_r2_min": 0.95,       # symbolic formulas explain >=95% of variance
+    "coef_abs_err_max": 0.05,     # 0.2% of the largest true coefficient (rho=28)
+}
+passed = print_check(
+    r2_min >= THRESHOLDS["formula_r2_min"]
+    and coef_abs_err <= THRESHOLDS["coef_abs_err_max"],
+    "Lorenz coefficient recovery and symbolic R^2",
+)
+RESULT_DIR = ensure_outdir("results/Lorenz")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "Lorenz",
+    "category": "odes",
+    "seed": SEED,
+    "n_train": int(N),
+    "dt": DT,
+    "formula_r2": np.asarray(r2).tolist(),
+    "formula_r2_min": r2_min,
+    "coef_abs_err": coef_abs_err,
+    "rollout_rmse": float(rmse),
+    "cond_theta": float(cond),
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
+
+# ---------------------------------------------------------------------------
+# 7. Figures
 # ---------------------------------------------------------------------------
 use_pub_style()
-os.makedirs("results/Lorenz", exist_ok=True)
 
 # 6a. Attractor overlay (x–z projection)
 fig, ax = plot_attractor_overlay(
@@ -151,42 +249,38 @@ fig, ax = plot_attractor_overlay(
     dim_x=0, dim_y=2,
     labels=["True Lorenz", "KANDy"],
     colors=["#1f77b4", "#d62728"],
-    title="Lorenz Attractor",
-    save="results/Lorenz/attractor",
 )
+fig.suptitle("Lorenz Attractor")
+fig.savefig("results/Lorenz/attractor.png", dpi=300, bbox_inches="tight")
 plt.close(fig)
 
 # 6b. Trajectory error
 t_test = np.arange(T_test) * DT
 fig, ax = plot_trajectory_error(
     true_traj, pred_traj, t=t_test,
-    title="Lorenz trajectory error",
-    save="results/Lorenz/trajectory_error",
 )
+fig.suptitle("Lorenz trajectory error")
+fig.savefig("results/Lorenz/trajectory_error.png", dpi=300, bbox_inches="tight")
 plt.close(fig)
 
 # 6c. Loss curves
 if hasattr(model, "train_results_") and model.train_results_ is not None:
     fig, ax = plot_loss_curves(
         model.train_results_,
-        title="Lorenz training loss",
-        save="results/Lorenz/loss_curves",
     )
+    fig.suptitle("Lorenz training loss")
+    fig.savefig("results/Lorenz/loss_curves.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 # 6d. All edge activations
-train_theta = torch.tensor(
-    lorenz_lift(X[: int(N * 0.70)]), dtype=torch.float32
-)
-activations = get_all_edge_activations(model.model_, X=train_theta)
-fig = plot_all_edges(
+fig, _axes = plot_all_edges(
     model.model_,
     X=train_theta,
-    input_names=FEATURE_NAMES,
-    output_names=["x_dot", "y_dot", "z_dot"],
-    title="Lorenz KAN edge activations",
-    save="results/Lorenz/edge_activations",
+    in_var_names=FEATURE_NAMES,
+    out_var_names=["x_dot", "y_dot", "z_dot"],
 )
+fig.suptitle("Lorenz KAN edge activations")
+fig.savefig("results/Lorenz/edge_activations.png", dpi=300, bbox_inches="tight")
 plt.close(fig)
 
 print("[FIGS]  Saved results/Lorenz/")

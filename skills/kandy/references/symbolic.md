@@ -8,12 +8,105 @@ produce one SymPy expression per state equation.
 
 ```python
 formulas = model.get_formula(
-    var_names=["x", "y", "z"],   # lift feature names
+    var_names=FEATURE_NAMES,     # lift feature names — NOT the state variables
     round_places=3,
     simplify=False,              # True: factor → together → nsimplify pipeline
+    lib=["x", "0"],              # match the EDGE shapes (see below)
+    r2_threshold=0.80,           # edges fitting worse than this are zeroed
+    weight_simple=0.0,           # simplicity pressure; default 0.8 is aggressive
 )
 # → list of SymPy expressions, one per state dimension
 ```
+
+> **`get_formula` mutates `model_` in place.** Each edge is replaced by its
+> snapped surrogate, so any later `predict`, `rollout` or edge plot reflects
+> the surrogate rather than the trained network — and a bad snap can drop the
+> model from R² 1.00 to 0.50 without raising anything. Do numeric validation
+> first, or `copy.deepcopy(model)` before each extraction attempt (see
+> `odes/pendulum_dictionary_completion_example.py`, which compares two
+> libraries on the same trained model that way).
+
+## Debugging a formula that came back too short
+
+This is the most common failure, and it is almost never the fit — check
+`model.predict` R² first. If the network is accurate but the formula is not,
+work through these in order:
+
+1. **Is `lib` rich enough for the EDGE SHAPES?** The library must describe
+   each edge as a function of its own input, which is not the same as the term
+   structure of the final equation. If the RHS is linear in the lifted
+   features, `lib=["x", "0"]` is right and the default library will fit
+   spurious quadratics to near-zero edges. If an edge is genuinely a parabola
+   (common when the lift omits `x²` on purpose), you need `"x^2"`. Plot the
+   edges — `plot_all_edges` — and look.
+
+2. **Is `weight_simple` too high?** The default `0.8` biases hard toward the
+   simplest primitive, and `'0'` is the simplest of all: real curved edges get
+   snapped to zero and vanish from the formula. Setting `weight_simple=0.0`
+   recovers them. Raising it above ~0.9 typically zeroes *everything* and
+   returns a bare constant.
+
+3. **Are the lift coordinates functionally independent?** If φ contains both
+   `x` and `x²` (or `x` and `x³`), an edge on one can mimic a function of the
+   other. The fit is perfect and the decomposition is meaningless — you get
+   quartics like `(a - b·x²)²`. Drop the redundant coordinate and let the edge
+   learn the power.
+
+4. **Can the edge be snapped at all?** PyKAN fits ONE primitive under an affine
+   composition, `c·f(a·x + b) + d`. This cannot represent a sum of two powers:
+   for `v - v³/3`, matching the absent `v²` term forces `b = 0`, which also
+   kills the linear term. A quadratic edge `αx + βx²` *is* representable, which
+   is why quadratics work and cubics-with-linear-parts do not. When snapping
+   is structurally impossible, fit the edge as a polynomial instead (below).
+
+5. **Is the data degenerate?** A conserved quantity (`S+I+R` const, fixed
+   energy) puts trajectory data on a manifold where the lifted features are
+   linearly dependent, so coefficients are non-identifiable — the fit is
+   perfect and the constants are wrong. Sample states independently over a box
+   and check `np.linalg.cond` of the lifted design matrix.
+
+## Edge-wise polynomial reconstruction
+
+When per-edge snapping cannot work (case 4 above), exploit the fact that a
+single-layer KAN output is exactly the sum of its edges:
+
+```
+output_j = Σ_i  edge_ij(theta_i)
+```
+
+Fit each edge with `np.polyfit` and add them up:
+
+```python
+from kandy.plotting import get_edge_activation
+
+expr = 0
+for i in range(n_features):
+    x_e, y_e = get_edge_activation(model.model_, 0, i, j)
+    coeffs = np.polyfit(np.asarray(x_e).ravel(), np.asarray(y_e).ravel(), 3)
+    expr += sum(float(c) * syms[i] ** (3 - k) for k, c in enumerate(coeffs))
+```
+
+Always verify the reconstruction against the network (`Σ edges` vs
+`model_(theta)`) before trusting it. On FitzHugh–Nagumo this recovers
+`dv/dt = -v³/3 + v - w + 1/2` exactly, where `auto_symbolic` returns
+`0.49 - w`.
+
+## Reading coefficients out of a snapped formula
+
+PyKAN returns each edge in the composed form `c*f(a*x + b) + d`, e.g.
+`-0.008*(6.13 - 8.17*N1)**2.0`, which hides the coefficients. Expand it —
+noting that SymPy will not expand a *float* exponent, so rationalise first:
+
+```python
+e = sp.expand(expr)
+e = e.replace(lambda x: x.is_Pow and x.exp.is_Float,
+              lambda x: sp.Pow(x.base, sp.Integer(round(float(x.exp)))))
+e = sp.expand(e)
+# then drop terms whose coefficient is below a tolerance
+```
+
+That turns the expression above into `0.80*N1 - 0.534*N1**2`, matching the
+true coefficients. See `mathbio/lotka_volterra_competition_example.py`.
 
 ## Physics-informed extraction
 

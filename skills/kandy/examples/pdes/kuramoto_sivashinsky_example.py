@@ -24,6 +24,8 @@ effectively discovers the structure of the KS equation in closed form.
 """
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
@@ -31,6 +33,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
+from _utils import ensure_outdir, print_check, save_metrics
 from kandy import KANDy, CustomLift
 from kandy.plotting import (
     plot_all_edges,
@@ -317,6 +324,59 @@ pred_rollout = rollout_ks(model, u0_rollout, N_ROLLOUT)
 
 rmse_rollout = np.sqrt(np.mean((pred_rollout - true_rollout) ** 2))
 print(f"[EVAL]  Rollout RMSE (T={N_ROLLOUT} steps, dt={DT}): {rmse_rollout:.6f}")
+
+# ---------------------------------------------------------------------------
+# 8. Verification
+#
+#     KS is  u_t = -u*u_x - u_xx - u_xxxx,  so against the six lifted features
+#     [u, u_x, u_xx, u_xxxx, u*u_x, u*u_xx] the true readout is
+#     [0, 0, -1, -1, -1, 0].  The three ZERO coefficients matter as much as the
+#     three active ones: u*u_xx is the decoy — it is a legitimate cross-term of
+#     the right order that does not appear in KS, so weight landing on it means
+#     the model found a numerically equivalent but physically wrong operator.
+#
+#     KS is chaotic, so rollout RMSE over a long horizon is not a correctness
+#     criterion; it is recorded, and the gated quantity is the operator itself.
+# ---------------------------------------------------------------------------
+A_TRUE = np.array([0.0, 0.0, -1.0, -1.0, -1.0, 0.0])
+A_hat, *_ = np.linalg.lstsq(Theta, model.predict(Theta), rcond=None)
+A_hat = A_hat.ravel()
+active_err = float(np.abs(A_hat[[2, 3, 4]] - A_TRUE[[2, 3, 4]]).max())
+decoy_max = float(np.abs(A_hat[[0, 1, 5]]).max())
+print(f"[EVAL]  Linear readout onto {FEATURE_NAMES}:\n        {np.round(A_hat, 4)}")
+print(f"[EVAL]  active-term max error {active_err:.4f} (u_xx, u_xxxx, u*u_x)")
+print(f"[EVAL]  largest weight on an absent term {decoy_max:.4f} "
+      f"(u, u_x, u*u_xx — the decoy)")
+
+THRESHOLDS = {
+    "active_coef_abs_err_max": 0.10,
+    "absent_coef_weight_max": 0.10,
+    "test_rmse_max": 1.0,
+}
+passed = print_check(
+    active_err <= THRESHOLDS["active_coef_abs_err_max"]
+    and decoy_max <= THRESHOLDS["absent_coef_weight_max"]
+    and float(mse ** 0.5) <= THRESHOLDS["test_rmse_max"],
+    "Kuramoto-Sivashinsky operator recovered, decoy cross-term stays at zero",
+)
+RESULT_DIR = ensure_outdir("results/KS")
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "KS",
+    "category": "pdes",
+    "seed": SEED,
+    "sampling": "spectral ETDRK4 trajectory",
+    "feature_names": FEATURE_NAMES,
+    "true_readout": A_TRUE.tolist(),
+    "linear_readout": A_hat.tolist(),
+    "active_coef_abs_err": active_err,
+    "absent_coef_weight_max": decoy_max,
+    "test_mse": float(mse),
+    "test_rmse": float(mse ** 0.5),
+    "rollout_rmse": float(rmse_rollout),
+    "rollout_steps": int(N_ROLLOUT),
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
 
 # ---------------------------------------------------------------------------
 # 8. Figures

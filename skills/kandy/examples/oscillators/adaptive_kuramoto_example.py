@@ -1,504 +1,632 @@
 #!/usr/bin/env python3
-"""KANDy example: Adaptive Kuramoto–Sakaguchi oscillators.
+"""KANDy example: Adaptive Kuramoto-Sakaguchi oscillators.
 
-N coupled phase oscillators with adaptive coupling weights:
-    dθ_i/dt  = ω_i + Σ_j  κ_ij * sin(θ_j - θ_i + α)
-    dκ_ij/dt = -ε * [κ_ij + sin(θ_j - θ_i + β)]
+N coupled phase oscillators with adaptive directed coupling weights:
+    dtheta_i/dt  = omega_i + sum_j kappa_ij * sin(theta_j - theta_i + alpha)
+    dkappa_ij/dt = -eps * [kappa_ij + sin(theta_j - theta_i + beta)]
 
-Parameters:
-    N     = 5 oscillators
-    ω_i   ~ Uniform(-0.5, 0.5)  (fixed natural frequencies)
-    α, β  = -π/4, -π/2
-    ε     = 0.1  (adaptation rate)
+The phase equation is bilinear in kappa_ij and the phase-difference
+trigonometric functions. KANDy is separable, so that product is a structural
+feature, not something the spline edges can invent from separate kappa and
+sin/cos inputs.
 
-State vector: (θ_1,...,θ_N, κ_12,...,κ_N(N-1)) ∈ R^{N + N(N-1)}
+Lifts used here:
+    phase model:
+        kappa_ij * sin(theta_j - theta_i)
+        kappa_ij * cos(theta_j - theta_i)
 
-Koopman lift: relative phases (sin AND cos) using θ_i - θ_j convention
-    phi(θ, κ) = [sin(θ_i - θ_j) for i≠j]          N*(N-1) features
-              ∪ [cos(θ_i - θ_j) for i≠j]          N*(N-1) features
-              ∪ [κ_ij for i≠j]                     N*(N-1) features
-              = 3*N*(N-1) features total
+    kappa model:
+        one independent sin/cos feature per unordered oscillator pair
+        directed kappa_ij features
 
-Why both sin and cos? sin(Δθ + α) = sin(Δθ)cos(α) + cos(Δθ)sin(α) requires
-both features; with θ_i - θ_j inputs the model learns sin(θ_i-θ_j-|α|) directly.
-
-KAN:  width = [3*N*(N-1), N]   (predicts N phase velocities)
-      base_fun = torch.sin
-A second KAN (width = [3*N*(N-1), N*(N-1)]) learns the κ dynamics.
-
-Three improvements over the baseline:
-  1. cos(θ_j - θ_i) added to the lift (fixes bilinear representation gap)
-  2. Rollout training for the phase model (rollout_weight=0.3, horizon=8 steps, Adam+mini-batch)
-  3. Rollout evaluation at T=500 steps (matches the RMSE target horizon)
+The kappa lift intentionally does not include both cos(theta_j - theta_i) and
+cos(theta_i - theta_j), since those are identical columns and make symbolic
+coefficients non-identifiable.
 """
 
 import os
+import sys
+from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-kandy")
+
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
 import numpy as np
 import torch
+import sympy as sp
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
-from kan import KAN
 
-from kandy import KANDy, CustomLift, angle_mse
-from kandy.training import fit_kan, make_windows
-from kandy.plotting import (
-    plot_loss_curves,
-    use_pub_style,
-)
+from kandy import KANDy, CustomLift
+from kandy.plotting import plot_loss_curves, use_pub_style
+from _utils import ensure_outdir, print_check, save_metrics, wrap_pi
 
 # ---------------------------------------------------------------------------
 # 0. Reproducibility / parameters
 # ---------------------------------------------------------------------------
-SEED  = 42
+SEED = 42
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 
-N      = 5             # number of oscillators
-ALPHA  = -np.pi / 4   # phase lag in phase equation
-BETA   = -np.pi / 2   # phase lag in coupling equation
-EPS    = 0.1          # adaptation rate
+N = 5
+ALPHA = -np.pi / 4
+BETA = -np.pi / 2
+EPS = 0.1
 
-ROLLOUT_HORIZON = 8    # steps per trajectory window during training
-T_EVAL          = 500  # evaluation rollout steps (matches RMSE target)
-VAL_FRAC        = 0.15
-TEST_FRAC       = 0.15
+N_TRAIN = 5000
+FIT_STEPS = 35
+T_EVAL = 500
+DT_SIM = 0.05
+KAPPA_SAMPLE_RANGE = 0.7
 
-# Fixed natural frequencies
-rng   = np.random.default_rng(SEED)
+rng = np.random.default_rng(SEED)
 OMEGA = rng.uniform(-0.5, 0.5, size=N)
+RESULT_DIR = ensure_outdir("results/Adaptive-Kuramoto")
 
-# Off-diagonal index pairs (i, j) where i ≠ j, ordered (0,1),(0,2),...
+# Directed off-diagonal pairs for kappa_ij.
 OD_PAIRS = [(i, j) for i in range(N) for j in range(N) if i != j]
-N_OD     = len(OD_PAIRS)   # N*(N-1) = 20
-N_FEAT   = 3 * N_OD        # sin + cos + κ = 60
-N_STATE  = N + N_OD        # 5 + 20 = 25  (raw state for rollout)
+N_OD = len(OD_PAIRS)
+N_STATE = N + N_OD
 
-DEVICE = torch.device("cpu")  # PyKAN has CUDA tensor issues
+# Independent phase pairs for sin/cos(theta_b - theta_a), a < b.
+PAIR_FEATURES = [(i, j) for i in range(N) for j in range(i + 1, N)]
+PAIR_INDEX = {pair: idx for idx, pair in enumerate(PAIR_FEATURES)}
+N_PAIR = len(PAIR_FEATURES)
 
-print(f"[PARAMS] N={N}, N_OD={N_OD}, N_FEAT={N_FEAT}, N_STATE={N_STATE}")
-print(f"         KAN_theta: [{N_FEAT}, {N}]")
-print(f"         KAN_kappa: [{N_FEAT}, {N_OD}]")
-
-# ---------------------------------------------------------------------------
-# 1. Simulation
-# ---------------------------------------------------------------------------
-
-def adaptive_kuramoto_rhs(t, y):
-    """Full RHS of the adaptive Kuramoto-Sakaguchi system."""
-    theta = y[:N]
-    kappa = y[N:].reshape(N, N)
-
-    dtheta = OMEGA.copy()
-    for i in range(N):
-        for j in range(N):
-            if i != j:
-                dtheta[i] += kappa[i, j] * np.sin(theta[j] - theta[i] + ALPHA)
-
-    dkappa = np.zeros((N, N))
-    for i in range(N):
-        for j in range(N):
-            if i != j:
-                dkappa[i, j] = -EPS * (kappa[i, j] + np.sin(theta[j] - theta[i] + BETA))
-
-    return np.concatenate([dtheta, dkappa.ravel()])
-
-
-def simulate(T_end: float = 200.0, dt: float = 0.05, seed: int = SEED):
-    """Simulate adaptive Kuramoto; return (t, theta_traj, kappa_traj)."""
-    rng0  = np.random.default_rng(seed)
-    theta0 = rng0.uniform(0, 2 * np.pi, size=N)
-    kappa0 = rng0.uniform(-0.5, 0.5, size=(N, N))
-    np.fill_diagonal(kappa0, 0.0)
-
-    y0     = np.concatenate([theta0, kappa0.ravel()])
-    t_eval = np.arange(0, T_end, dt)
-    sol    = solve_ivp(adaptive_kuramoto_rhs, [0, T_end], y0,
-                       t_eval=t_eval, method="RK45",
-                       rtol=1e-8, atol=1e-10, dense_output=False)
-
-    theta_traj = sol.y[:N, :].T
-    kappa_traj = sol.y[N:, :].T.reshape(-1, N, N)
-    return sol.t, theta_traj, kappa_traj
-
-
-print("[DATA]  Simulating adaptive Kuramoto ...")
-t_sim, THETA, KAPPA = simulate(T_end=300.0, dt=0.05)
-T_snap = len(t_sim)
-DT_SIM = t_sim[1] - t_sim[0]
-print(f"[DATA]  T={T_snap} snapshots, dt={DT_SIM:.3f}")
-
-# ---------------------------------------------------------------------------
-# 2. Koopman lift  phi(theta, kappa) -> R^{3*N_OD}
-#    FIX 1: include cos(θ_j - θ_i) — needed to represent sin(Δθ + α) exactly
-# ---------------------------------------------------------------------------
-SIN_NAMES   = [f"sin(θ{i}-θ{j})" for (i, j) in OD_PAIRS]
-COS_NAMES   = [f"cos(θ{i}-θ{j})" for (i, j) in OD_PAIRS]
-KAPPA_NAMES = [f"κ{i}{j}"         for (i, j) in OD_PAIRS]
-FEATURE_NAMES = SIN_NAMES + COS_NAMES + KAPPA_NAMES
-
-
-def build_lift(theta: np.ndarray, kappa: np.ndarray) -> np.ndarray:
-    """Lift (T, N) + (T, N, N) → (T, 3*N_OD).
-
-    theta : (T, N) phase angles
-    kappa : (T, N, N) coupling matrix (diagonal unused)
-    Uses θ_i - θ_j convention (negative of θ_j - θ_i).
-    """
-    sin_feats   = np.column_stack(
-        [np.sin(theta[:, i] - theta[:, j]) for (i, j) in OD_PAIRS]
-    )                                           # (T, N_OD)
-    cos_feats   = np.column_stack(
-        [np.cos(theta[:, i] - theta[:, j]) for (i, j) in OD_PAIRS]
-    )                                           # (T, N_OD)
-    kappa_feats = np.column_stack(
-        [kappa[:, i, j] for (i, j) in OD_PAIRS]
-    )                                           # (T, N_OD)
-    return np.hstack([sin_feats, cos_feats, kappa_feats])  # (T, 3*N_OD)
-
-
-Theta = build_lift(THETA, KAPPA)       # (T, N_FEAT)
-
-# Targets: phase velocities and κ velocities via central differences
-Theta_inner = Theta[1:-1]
-THETA_inner = THETA[1:-1]
-KAPPA_inner = KAPPA[1:-1]
-
-THETA_dot = (THETA[2:] - THETA[:-2]) / (2.0 * DT_SIM)   # (T-2, N)
-KAPPA_dot = (KAPPA[2:] - KAPPA[:-2]) / (2.0 * DT_SIM)   # (T-2, N, N)
-
-KAPPA_dot_od = np.column_stack(
-    [KAPPA_dot[:, i, j] for (i, j) in OD_PAIRS]
-)   # (T-2, N_OD)
-
-T_INNER = len(Theta_inner)
-print(f"[DATA]  Training samples: {T_INNER}")
-
-# Chronological split indices (must match KANDy defaults)
-n1 = int(T_INNER * (1 - VAL_FRAC - TEST_FRAC))   # end of train
-n2 = int(T_INNER * (1 - TEST_FRAC))               # end of val
-
-
-def _t(arr: np.ndarray) -> torch.Tensor:
-    return torch.tensor(arr, dtype=torch.float32, device=DEVICE)
-
-
-# ---------------------------------------------------------------------------
-# 3. Raw state trajectory for rollout training
-#    State = (θ_1,...,θ_N, κ_01,...,κ_N(N-1)) — N_STATE = 25 dims
-# ---------------------------------------------------------------------------
-KAPPA_OD_inner = np.column_stack(
-    [KAPPA_inner[:, i, j] for (i, j) in OD_PAIRS]
-)                                               # (T-2, N_OD)
-state_inner = np.hstack([THETA_inner, KAPPA_OD_inner])   # (T-2, N_STATE=25)
-
-# Windowed segments for rollout: (B, HORIZON+1, N_STATE)
-train_traj_windows = make_windows(
-    _t(state_inner[:n1]),
-    window=ROLLOUT_HORIZON + 1,
+PHASE_FEATURE_NAMES = (
+    [f"ks{i}{j}" for (i, j) in OD_PAIRS]
+    + [f"kc{i}{j}" for (i, j) in OD_PAIRS]
 )
-train_t_arr = torch.arange(ROLLOUT_HORIZON + 1, dtype=torch.float32, device=DEVICE) * float(DT_SIM)
-print(f"[DATA]  train_traj windows: {train_traj_windows.shape}")
+KAPPA_FEATURE_NAMES = (
+    [f"s{i}{j}" for (i, j) in PAIR_FEATURES]
+    + [f"c{i}{j}" for (i, j) in PAIR_FEATURES]
+    + [f"k{i}{j}" for (i, j) in OD_PAIRS]
+)
+
+print(f"[PARAMS] N={N}, N_OD={N_OD}, N_STATE={N_STATE}")
+print(f"         alpha={ALPHA:.4f}, beta={BETA:.4f}, eps={EPS}")
+print(f"         KAN_phase: [{len(PHASE_FEATURE_NAMES)}, {N}]")
+print(f"         KAN_kappa: [{len(KAPPA_FEATURE_NAMES)}, {N_OD}]")
+print(f"         omega = {OMEGA.round(4)}")
 
 # ---------------------------------------------------------------------------
-# 4. Train Model B: coupling dynamics dκ/dt  (derivative supervision only)
-#    Train this FIRST so it can be used (frozen) in the phase rollout.
+# 1. State helpers and exact dynamics
 # ---------------------------------------------------------------------------
-print("\n--- Model B: coupling dynamics dκ/dt (KAN=[{}, {}]) ---".format(N_FEAT, N_OD))
 
-kappa_lift = CustomLift(fn=lambda X: X, output_dim=N_FEAT, name="kappa_lift")
+def unpack_state(state: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Split state rows into theta and off-diagonal kappa coordinates."""
+    return state[:, :N], state[:, N:]
 
+
+def adaptive_rhs_batch(state: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorized adaptive Kuramoto-Sakaguchi RHS.
+
+    state: (T, N + N_OD), ordered as theta_0..theta_N, then kappa_ij for
+    OD_PAIRS. Returns (dtheta, dkappa_od).
+    """
+    theta, kappa_od = unpack_state(state)
+    dtheta = np.tile(OMEGA, (state.shape[0], 1))
+    dkappa = np.zeros((state.shape[0], N_OD))
+
+    for idx, (i, j) in enumerate(OD_PAIRS):
+        delta = theta[:, j] - theta[:, i]
+        dtheta[:, i] += kappa_od[:, idx] * np.sin(delta + ALPHA)
+        dkappa[:, idx] = -EPS * (kappa_od[:, idx] + np.sin(delta + BETA))
+
+    return dtheta, dkappa
+
+
+def adaptive_rhs_ivp(_t: float, state: np.ndarray) -> np.ndarray:
+    """Single-state RHS for solve_ivp."""
+    dtheta, dkappa = adaptive_rhs_batch(state[None, :])
+    return np.concatenate([dtheta.ravel(), dkappa.ravel()])
+
+
+def simulate(T_end: float, dt: float, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """Simulate one validation trajectory; return (t, state_traj)."""
+    rng0 = np.random.default_rng(seed)
+    theta0 = rng0.uniform(0, 2 * np.pi, size=N)
+    kappa0 = rng0.uniform(-0.5, 0.5, size=N_OD)
+    y0 = np.concatenate([theta0, kappa0])
+
+    t_eval = np.arange(0, T_end, dt)
+    sol = solve_ivp(
+        adaptive_rhs_ivp,
+        [0, T_end],
+        y0,
+        t_eval=t_eval,
+        method="RK45",
+        rtol=1e-8,
+        atol=1e-10,
+    )
+    return sol.t, sol.y.T
+
+
+# ---------------------------------------------------------------------------
+# 2. Lifts
+# ---------------------------------------------------------------------------
+
+def phase_lift_np(state: np.ndarray) -> np.ndarray:
+    """Lift for dtheta: [kappa_ij*sin(delta_ij), kappa_ij*cos(delta_ij)]."""
+    theta, kappa_od = unpack_state(state)
+    sin_products = []
+    cos_products = []
+    for idx, (i, j) in enumerate(OD_PAIRS):
+        delta = theta[:, j] - theta[:, i]
+        sin_products.append(kappa_od[:, idx] * np.sin(delta))
+        cos_products.append(kappa_od[:, idx] * np.cos(delta))
+    return np.column_stack(sin_products + cos_products)
+
+
+def phase_lift_torch(state: torch.Tensor) -> torch.Tensor:
+    """Torch version of phase_lift_np for rollout-loss-capable fits."""
+    theta = state[:, :N]
+    kappa_od = state[:, N:]
+    sin_products = []
+    cos_products = []
+    for idx, (i, j) in enumerate(OD_PAIRS):
+        delta = theta[:, j] - theta[:, i]
+        sin_products.append(kappa_od[:, idx] * torch.sin(delta))
+        cos_products.append(kappa_od[:, idx] * torch.cos(delta))
+    return torch.stack(sin_products + cos_products, dim=1)
+
+
+def kappa_lift_np(state: np.ndarray) -> np.ndarray:
+    """Lift for dkappa: independent pair sin/cos features plus directed kappa."""
+    theta, kappa_od = unpack_state(state)
+    sin_feats = []
+    cos_feats = []
+    for i, j in PAIR_FEATURES:
+        delta = theta[:, j] - theta[:, i]
+        sin_feats.append(np.sin(delta))
+        cos_feats.append(np.cos(delta))
+    kappa_feats = [kappa_od[:, idx] for idx in range(N_OD)]
+    return np.column_stack(sin_feats + cos_feats + kappa_feats)
+
+
+def kappa_lift_torch(state: torch.Tensor) -> torch.Tensor:
+    """Torch version of kappa_lift_np for rollout-loss-capable fits."""
+    theta = state[:, :N]
+    kappa_od = state[:, N:]
+    sin_feats = []
+    cos_feats = []
+    for i, j in PAIR_FEATURES:
+        delta = theta[:, j] - theta[:, i]
+        sin_feats.append(torch.sin(delta))
+        cos_feats.append(torch.cos(delta))
+    kappa_feats = [kappa_od[:, idx] for idx in range(N_OD)]
+    return torch.stack(sin_feats + cos_feats + kappa_feats, dim=1)
+
+
+# ---------------------------------------------------------------------------
+# 3. Independent training data
+# ---------------------------------------------------------------------------
+print("[DATA]  Sampling independent states on the theta/kappa domain ...")
+train_rng = np.random.default_rng(SEED + 200)
+theta_train = train_rng.uniform(0, 2 * np.pi, size=(N_TRAIN, N))
+kappa_train = train_rng.uniform(
+    -KAPPA_SAMPLE_RANGE,
+    KAPPA_SAMPLE_RANGE,
+    size=(N_TRAIN, N_OD),
+)
+STATE_TRAIN = np.hstack([theta_train, kappa_train])
+THETA_DOT, KAPPA_DOT = adaptive_rhs_batch(STATE_TRAIN)
+
+phase_design = np.column_stack([np.ones(N_TRAIN), phase_lift_np(STATE_TRAIN)])
+kappa_design = np.column_stack([np.ones(N_TRAIN), kappa_lift_np(STATE_TRAIN)])
+print(f"[DATA]  Training samples: {N_TRAIN}")
+print(f"[DATA]  Phase lift condition number: {np.linalg.cond(phase_design):.2e}")
+print(f"[DATA]  Kappa lift condition number: {np.linalg.cond(kappa_design):.2e}")
+
+print("[DATA]  Simulating validation trajectory ...")
+t_true, STATE_TRUE = simulate(
+    T_end=(T_EVAL + 1) * DT_SIM,
+    dt=DT_SIM,
+    seed=SEED + 1,
+)
+T_EVAL = min(T_EVAL, len(STATE_TRUE))
+STATE_TRUE = STATE_TRUE[:T_EVAL]
+print(f"[DATA]  Validation snapshots: {T_EVAL}, dt={DT_SIM:.3f}")
+
+# ---------------------------------------------------------------------------
+# 4. Fit KANDy models
+# ---------------------------------------------------------------------------
+phase_lift = CustomLift(
+    fn=phase_lift_np,
+    output_dim=len(PHASE_FEATURE_NAMES),
+    torch_fn=phase_lift_torch,
+    name="adaptive_phase_products",
+)
+kappa_lift = CustomLift(
+    fn=kappa_lift_np,
+    output_dim=len(KAPPA_FEATURE_NAMES),
+    torch_fn=kappa_lift_torch,
+    name="adaptive_kappa_linear",
+)
+
+model_phase = KANDy(
+    lift=phase_lift,
+    grid=5,
+    k=3,
+    steps=FIT_STEPS,
+    seed=SEED,
+    base_fun=torch.nn.Identity(),
+    device="cpu",
+)
 model_kappa = KANDy(
     lift=kappa_lift,
     grid=5,
     k=3,
-    steps=200,
+    steps=FIT_STEPS,
     seed=SEED,
-    base_fun=torch.sin,
-)
-
-model_kappa.fit(
-    X=Theta_inner,
-    X_dot=KAPPA_dot_od,
-    val_frac=VAL_FRAC,
-    test_frac=TEST_FRAC,
-    lamb=0.0,
-)
-
-# ---------------------------------------------------------------------------
-# 5. Train Model A: phase dynamics dθ/dt  with rollout regularisation
-#    FIX 2 & 3: rollout_weight=0.3, coupled dynamics_fn, horizon=8 steps, Adam
-# ---------------------------------------------------------------------------
-print("\n--- Model A: phase dynamics dθ/dt with rollout (KAN=[{}, {}]) ---".format(N_FEAT, N))
-
-# Build the KAN directly so we can pass it to fit_kan with train_traj
-theta_kan = KAN(
-    width=[N_FEAT, N],
-    grid=5,
-    k=3,
-    seed=SEED,
-    base_fun=torch.sin,
-).to(DEVICE)
-
-# Freeze kappa model during theta rollout training
-for p in model_kappa.model_.parameters():
-    p.requires_grad_(False)
-
-
-def _build_phi_torch(state: torch.Tensor) -> torch.Tensor:
-    """Build lifted features from raw state.  state: (B, N_STATE) -> phi: (B, N_FEAT)"""
-    th = state[:, :N]    # (B, N)
-    kp = state[:, N:]    # (B, N_OD)
-    sin_f = torch.stack([torch.sin(th[:, i] - th[:, j]) for (i, j) in OD_PAIRS], dim=1)
-    cos_f = torch.stack([torch.cos(th[:, i] - th[:, j]) for (i, j) in OD_PAIRS], dim=1)
-    return torch.cat([sin_f, cos_f, kp], dim=1)   # (B, N_FEAT)
-
-
-def dynamics_fn_coupled(state: torch.Tensor) -> torch.Tensor:
-    """Coupled dynamics for rollout training.
-    state: (B, N_STATE)  ->  d_state: (B, N_STATE)
-    Gradient flows through theta_kan only; model_kappa is frozen.
-    """
-    phi = _build_phi_torch(state)
-    dtheta = theta_kan(phi)                  # (B, N)   — gradient here
-    with torch.no_grad():
-        dkappa = model_kappa.model_(phi)     # (B, N_OD) — frozen
-    return torch.cat([dtheta, dkappa], dim=1)   # (B, N_STATE)
-
-
-def theta_rollout_loss(pred: torch.Tensor, true: torch.Tensor) -> torch.Tensor:
-    """angle_mse on the θ component only.  pred, true: (B, T, N_STATE)"""
-    return angle_mse(pred[:, :, :N], true[:, :, :N])
-
-
-# Full dataset: derivative supervision + rollout trajectories
-dataset_theta = {
-    "train_input":  _t(Theta_inner[:n1]),
-    "train_label":  _t(THETA_dot[:n1]),
-    "val_input":    _t(Theta_inner[n1:n2]),
-    "val_label":    _t(THETA_dot[n1:n2]),
-    "test_input":   _t(Theta_inner[n2:]),
-    "test_label":   _t(THETA_dot[n2:]),
-    "train_traj":   train_traj_windows,
-    "train_t":      train_t_arr,
-}
-
-# Phase 1: LBFGS warm-start (derivative supervision only)
-print("  Phase 1: LBFGS warm-start (200 steps, deriv only) ...")
-fit_kan(
-    theta_kan,
-    dataset_theta,
-    opt="LBFGS",
-    steps=200,
-    lamb=0.0,
-    rollout_weight=0.0,
-)
-
-# Phase 2: Adam fine-tune with rollout regularisation
-print("  Phase 2: Adam rollout training (200 steps, rollout_weight=0.3) ...")
-train_results_theta = fit_kan(
-    theta_kan,
-    dataset_theta,
-    opt="Adam",
-    lr=5e-5,
-    steps=200,
-    lamb=0.0,
-    rollout_weight=0.3,
-    rollout_loss_fn=theta_rollout_loss,
-    dynamics_fn=dynamics_fn_coupled,
-    rollout_horizon=ROLLOUT_HORIZON,
-    integrator="rk4",
-    traj_batch=256,
-    patience=50,
-)
-
-# Re-enable gradients on kappa model (needed for symbolic extraction later)
-for p in model_kappa.model_.parameters():
-    p.requires_grad_(True)
-
-# Wrap theta_kan in a KANDy shell for consistent predict/get_formula API
-theta_lift = CustomLift(fn=lambda X: X, output_dim=N_FEAT, name="kuramoto_lift")
-model_theta = KANDy(
-    lift=theta_lift,
-    grid=5,
-    k=3,
-    steps=200,
-    seed=SEED,
-    base_fun=torch.sin,
+    base_fun=torch.nn.Identity(),
     device="cpu",
 )
-model_theta.model_          = theta_kan
-model_theta.lift_dim_       = N_FEAT
-model_theta.state_dim_      = N
-model_theta._is_fitted      = True
-model_theta._train_input    = dataset_theta["train_input"]
-model_theta.train_results_  = train_results_theta
 
-# ---------------------------------------------------------------------------
-# 6. Coupled rollout — FIX 3: evaluate at T=500 steps
-#    NOTE: rollout MUST happen before symbolic extraction.
-#    get_formula() calls auto_symbolic() which replaces splines with fitted
-#    symbolic functions (log, sqrt, 1/x) that can blow up outside the
-#    training distribution.
-# ---------------------------------------------------------------------------
-
-def rollout_coupled(theta0: np.ndarray, kappa0_od: np.ndarray,
-                    T_steps: int, dt: float) -> tuple:
-    """RK4 rollout using both learned models.
-
-    theta0    : (N,) initial phases
-    kappa0_od : (N_OD,) initial off-diagonal couplings (flattened)
-    Returns: (theta_traj (T, N), kappa_od_traj (T, N_OD))
-    """
-    theta    = theta0.copy().astype(np.float64)
-    kappa_od = kappa0_od.copy().astype(np.float64)
-    theta_hist    = [theta.copy()]
-    kappa_od_hist = [kappa_od.copy()]
-
-    def get_phi(th, kp):
-        """Build the 3*N_OD feature vector from current state."""
-        sin_f = np.array([np.sin(th[i] - th[j]) for (i, j) in OD_PAIRS])
-        cos_f = np.array([np.cos(th[i] - th[j]) for (i, j) in OD_PAIRS])
-        return np.concatenate([sin_f, cos_f, kp])[None, :]   # (1, 3*N_OD)
-
-    def f(th, kp):
-        phi = get_phi(th, kp)
-        dth = model_theta.predict(phi).ravel()
-        dkp = model_kappa.predict(phi).ravel()
-        return dth, dkp
-
-    for _ in range(T_steps - 1):
-        # RK4
-        dt1, dk1 = f(theta,                   kappa_od)
-        dt2, dk2 = f(theta + 0.5*dt*dt1,      kappa_od + 0.5*dt*dk1)
-        dt3, dk3 = f(theta + 0.5*dt*dt2,      kappa_od + 0.5*dt*dk2)
-        dt4, dk4 = f(theta + dt*dt3,           kappa_od + dt*dk3)
-
-        theta    = theta    + (dt / 6.0) * (dt1 + 2*dt2 + 2*dt3 + dt4)
-        kappa_od = kappa_od + (dt / 6.0) * (dk1 + 2*dk2 + 2*dk3 + dk4)
-        theta_hist.append(theta.copy())
-        kappa_od_hist.append(kappa_od.copy())
-
-    return np.array(theta_hist), np.array(kappa_od_hist)
-
-
-t0_idx = T_INNER - int(T_INNER * TEST_FRAC)
-T_EVAL = min(T_EVAL, T_INNER - t0_idx)   # don't exceed available test data
-
-theta0_test   = THETA_inner[t0_idx]
-kappa_od_test = np.array([KAPPA_inner[t0_idx, i, j] for (i, j) in OD_PAIRS])
-
-print(f"\n[ROLLOUT] Rolling out {T_EVAL} steps ...")
-pred_theta, pred_kappa_od = rollout_coupled(
-    theta0_test, kappa_od_test, T_EVAL, DT_SIM
+print("\n[TRAIN] Fitting phase model ...")
+model_phase.fit(
+    X=STATE_TRAIN,
+    X_dot=THETA_DOT,
+    val_frac=0.15,
+    test_frac=0.15,
+    lamb=0.0,
+    patience=0,
+    verbose=True,
 )
-true_theta    = THETA_inner[t0_idx:t0_idx + T_EVAL]
-true_kappa_od = np.column_stack([
-    KAPPA_inner[t0_idx:t0_idx + T_EVAL, i, j] for (i, j) in OD_PAIRS
-])
 
-rmse_theta = np.sqrt(np.mean((pred_theta - true_theta) ** 2))
-rmse_kappa = np.sqrt(np.mean((pred_kappa_od - true_kappa_od) ** 2))
-print(f"[EVAL]  Rollout RMSE θ: {rmse_theta:.6f}")
-print(f"[EVAL]  Rollout RMSE κ: {rmse_kappa:.6f}")
+print("\n[TRAIN] Fitting kappa model ...")
+model_kappa.fit(
+    X=STATE_TRAIN,
+    X_dot=KAPPA_DOT,
+    val_frac=0.15,
+    test_frac=0.15,
+    lamb=0.0,
+    patience=0,
+    verbose=True,
+)
 
-# Order parameter r(t) = |1/N * Σ_j exp(i θ_j)|
-r_true = np.abs(np.mean(np.exp(1j * true_theta), axis=1))   # (T_EVAL,)
-r_pred = np.abs(np.mean(np.exp(1j * pred_theta), axis=1))   # (T_EVAL,)
+# ---------------------------------------------------------------------------
+# 5. Coupled rollout validation
+# ---------------------------------------------------------------------------
+
+def learned_rhs(state: np.ndarray) -> np.ndarray:
+    """Combined learned RHS for the raw state vector."""
+    dtheta = model_phase.predict(state).ravel()
+    dkappa = model_kappa.predict(state).ravel()
+    return np.concatenate([dtheta, dkappa])
+
+
+def rollout_learned(state0: np.ndarray, n_steps: int, dt: float) -> np.ndarray:
+    """RK4 rollout using the two learned KANDy models."""
+    state = state0.copy().astype(np.float64)
+    traj = [state.copy()]
+
+    for _ in range(n_steps - 1):
+        k1 = learned_rhs(state)
+        k2 = learned_rhs(state + 0.5 * dt * k1)
+        k3 = learned_rhs(state + 0.5 * dt * k2)
+        k4 = learned_rhs(state + dt * k3)
+        state = state + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+        traj.append(state.copy())
+
+    return np.array(traj)
+
+
+print(f"\n[ROLLOUT] Rolling out {T_EVAL} steps ...", flush=True)
+STATE_PRED = rollout_learned(STATE_TRUE[0], T_EVAL, DT_SIM)
+
+true_theta = STATE_TRUE[:, :N]
+pred_theta = STATE_PRED[:, :N]
+true_kappa = STATE_TRUE[:, N:]
+pred_kappa = STATE_PRED[:, N:]
+
+rmse_theta = np.sqrt(np.mean(wrap_pi(pred_theta - true_theta) ** 2))
+rmse_kappa = np.sqrt(np.mean((pred_kappa - true_kappa) ** 2))
+print(f"[EVAL]  Wrapped phase RMSE theta: {rmse_theta:.6f}", flush=True)
+print(f"[EVAL]  Kappa RMSE: {rmse_kappa:.6f}", flush=True)
+
+r_true = np.abs(np.mean(np.exp(1j * true_theta), axis=1))
+r_pred = np.abs(np.mean(np.exp(1j * pred_theta), axis=1))
 rmse_r = np.sqrt(np.mean((r_pred - r_true) ** 2))
-print(f"[EVAL]  Order parameter RMSE r: {rmse_r:.6f}")
+print(f"[EVAL]  Order parameter RMSE r: {rmse_r:.6f}", flush=True)
+
+signal_true = np.cos(true_theta)
+signal_pred = np.cos(pred_theta)
+rmse_signal = np.sqrt(np.mean((signal_pred - signal_true) ** 2))
+print(f"[EVAL]  Oscillator signal RMSE cos(theta): {rmse_signal:.6f}", flush=True)
 
 # ---------------------------------------------------------------------------
-# 7. Figures
+# 6. Effective symbolic readout
 # ---------------------------------------------------------------------------
-use_pub_style()
-os.makedirs("results/Adaptive-Kuramoto", exist_ok=True)
 
-t_roll = np.arange(T_EVAL) * DT_SIM
+def effective_linear_readout(
+    model: KANDy,
+    lift_fn,
+    state: np.ndarray,
+) -> np.ndarray:
+    """Least-squares linear surrogate of model.predict(state) on [1, lift]."""
+    phi = lift_fn(state)
+    design = np.column_stack([np.ones(len(phi)), phi])
+    coef, *_ = np.linalg.lstsq(design, model.predict(state), rcond=None)
+    return coef.T
 
-# 7a. Phase trajectories
-fig, axes = plt.subplots(N, 1, figsize=(8, 2 * N), sharex=True)
-colors = plt.cm.tab10.colors
-for i, ax in enumerate(axes):
-    ax.plot(t_roll, true_theta[:, i],  color=colors[i], lw=1.2, label="True")
-    ax.plot(t_roll, pred_theta[:, i],  color=colors[i], lw=1.0, ls="--", label="KANDy")
-    ax.set_ylabel(f"$\\theta_{i}$")
-    if i == 0:
-        ax.legend(loc="upper right", fontsize=7)
-axes[-1].set_xlabel("time")
-fig.suptitle("Adaptive Kuramoto: phase trajectories", fontsize=11)
-fig.tight_layout()
-fig.savefig("results/Adaptive-Kuramoto/phase_trajectories.png", dpi=300, bbox_inches="tight")
-fig.savefig("results/Adaptive-Kuramoto/phase_trajectories.pdf", dpi=300, bbox_inches="tight")
-plt.close(fig)
 
-# 7b. Coupling weight trajectories (first 4 pairs)
-n_show = min(4, N_OD)
-fig, axes = plt.subplots(n_show, 1, figsize=(8, 2 * n_show), sharex=True)
-if n_show == 1:
-    axes = [axes]
-for k_idx, ax in enumerate(axes):
-    i, j = OD_PAIRS[k_idx]
-    ax.plot(t_roll, true_kappa_od[:, k_idx],  color=colors[k_idx % 10], lw=1.2)
-    ax.plot(t_roll, pred_kappa_od[:, k_idx],  color=colors[k_idx % 10], lw=1.0, ls="--")
-    ax.set_ylabel(f"$\\kappa_{{{i}{j}}}$")
-axes[-1].set_xlabel("time")
-fig.suptitle("Adaptive Kuramoto: coupling weights", fontsize=11)
-fig.tight_layout()
-fig.savefig("results/Adaptive-Kuramoto/kappa_trajectories.png", dpi=300, bbox_inches="tight")
-fig.savefig("results/Adaptive-Kuramoto/kappa_trajectories.pdf", dpi=300, bbox_inches="tight")
-plt.close(fig)
+def true_phase_readout() -> np.ndarray:
+    """Exact phase coefficients in [1, k*sin(delta), k*cos(delta)]."""
+    coef = np.zeros((N, 1 + len(PHASE_FEATURE_NAMES)))
+    coef[:, 0] = OMEGA
+    for idx, (i, _j) in enumerate(OD_PAIRS):
+        coef[i, 1 + idx] = np.cos(ALPHA)
+        coef[i, 1 + N_OD + idx] = np.sin(ALPHA)
+    return coef
 
-# 7c. Order parameter r(t)
-fig, ax = plt.subplots(figsize=(8, 3))
-ax.plot(t_roll, r_true, color="steelblue",  lw=1.4, label="True $r(t)$")
-ax.plot(t_roll, r_pred, color="tomato", lw=1.0, ls="--", label="KANDy $r(t)$")
-ax.set_xlabel("time")
-ax.set_ylabel("$r(t)$")
-ax.set_title(f"Kuramoto order parameter  (RMSE={rmse_r:.4f})")
-ax.legend(fontsize=8)
-ax.set_ylim(0, 1.05)
-fig.tight_layout()
-fig.savefig("results/Adaptive-Kuramoto/order_parameter.png", dpi=300, bbox_inches="tight")
-fig.savefig("results/Adaptive-Kuramoto/order_parameter.pdf", dpi=300, bbox_inches="tight")
-plt.close(fig)
 
-# 7d. Loss curves (theta model)
-if hasattr(model_theta, "train_results_") and model_theta.train_results_:
-    fig, ax = plot_loss_curves(
-        model_theta.train_results_,
-        save="results/Adaptive-Kuramoto/loss_phase",
-    )
+def true_kappa_readout() -> np.ndarray:
+    """Exact kappa coefficients in [1, pair sin, pair cos, directed kappa]."""
+    coef = np.zeros((N_OD, 1 + len(KAPPA_FEATURE_NAMES)))
+    for out_idx, (i, j) in enumerate(OD_PAIRS):
+        pair = (i, j) if i < j else (j, i)
+        pair_idx = PAIR_INDEX[pair]
+        sin_sign = 1.0 if i < j else -1.0
+
+        coef[out_idx, 1 + pair_idx] = -EPS * sin_sign * np.cos(BETA)
+        coef[out_idx, 1 + N_PAIR + pair_idx] = -EPS * np.sin(BETA)
+        coef[out_idx, 1 + 2 * N_PAIR + out_idx] = -EPS
+    return coef
+
+
+def formulas_from_readout(
+    coef: np.ndarray,
+    feature_names: list[str],
+    threshold: float = 5e-4,
+) -> list[sp.Expr]:
+    """Convert linear coefficients to compact SymPy formulas."""
+    symbols = [sp.Symbol(name) for name in feature_names]
+    formulas = []
+    for row in coef:
+        expr = sp.Float(round(float(row[0]), 4))
+        for value, symbol in zip(row[1:], symbols):
+            if abs(value) >= threshold:
+                expr += sp.Float(round(float(value), 4)) * symbol
+        formulas.append(sp.expand(expr))
+    return formulas
+
+
+A_phase = effective_linear_readout(model_phase, phase_lift_np, STATE_TRAIN)
+A_kappa = effective_linear_readout(model_kappa, kappa_lift_np, STATE_TRAIN)
+A_phase_true = true_phase_readout()
+A_kappa_true = true_kappa_readout()
+
+phase_coef_err = np.max(np.abs(A_phase - A_phase_true))
+kappa_coef_err = np.max(np.abs(A_kappa - A_kappa_true))
+
+phase_formulas = formulas_from_readout(A_phase, PHASE_FEATURE_NAMES)
+kappa_formulas = formulas_from_readout(A_kappa, KAPPA_FEATURE_NAMES)
+
+print("\n[SYMBOLIC] Effective linear formulas")
+print("           ksij = kappa_ij*sin(theta_j-theta_i)")
+print("           kcij = kappa_ij*cos(theta_j-theta_i)")
+print(f"           phase max coefficient error = {phase_coef_err:.2e}")
+print(f"           kappa max coefficient error = {kappa_coef_err:.2e}\n")
+
+thresholds = {
+    "rmse_theta": 5e-2,
+    "rmse_kappa": 1e-2,
+    "rmse_signal": 5e-2,
+    "rmse_order_parameter": 5e-3,
+    "phase_max_coefficient_error": 1e-3,
+    "kappa_max_coefficient_error": 1e-3,
+}
+checks_ok = (
+    rmse_theta < thresholds["rmse_theta"]
+    and rmse_kappa < thresholds["rmse_kappa"]
+    and rmse_signal < thresholds["rmse_signal"]
+    and rmse_r < thresholds["rmse_order_parameter"]
+    and phase_coef_err < thresholds["phase_max_coefficient_error"]
+    and kappa_coef_err < thresholds["kappa_max_coefficient_error"]
+)
+metrics = {
+    "seed": SEED,
+    "n_oscillators": N,
+    "n_directed_couplings": N_OD,
+    "n_train": N_TRAIN,
+    "n_eval": T_EVAL,
+    "dt": DT_SIM,
+    "rmse_theta": rmse_theta,
+    "rmse_kappa": rmse_kappa,
+    "rmse_signal": rmse_signal,
+    "rmse_order_parameter": rmse_r,
+    "phase_max_coefficient_error": phase_coef_err,
+    "kappa_max_coefficient_error": kappa_coef_err,
+    "thresholds": thresholds,
+    "passed": print_check(
+        checks_ok,
+        "rollout and coefficients within thresholds",
+    ),
+}
+save_metrics(RESULT_DIR / "metrics.json", metrics)
+print(flush=True)
+
+print("--- Phase dynamics dtheta/dt ---")
+for i, formula in enumerate(phase_formulas):
+    print(f"  dtheta{i}/dt = {formula}")
+
+print("\n--- Coupling dynamics dkappa/dt ---")
+for idx, ((i, j), formula) in enumerate(zip(OD_PAIRS, kappa_formulas)):
+    print(f"  dk{i}{j}/dt = {formula}")
+
+# ---------------------------------------------------------------------------
+# 7. Figure helpers
+# ---------------------------------------------------------------------------
+
+def plot_phase_trajectories(
+    outdir: Path,
+    t_roll: np.ndarray,
+    theta_true: np.ndarray,
+    theta_pred: np.ndarray,
+) -> None:
+    colors = plt.cm.tab10.colors
+    fig, axes = plt.subplots(N, 1, figsize=(8, 2 * N), sharex=True)
+    for i, ax in enumerate(axes):
+        ax.plot(t_roll, theta_true[:, i], color=colors[i], lw=1.2, label="True")
+        ax.plot(t_roll, theta_pred[:, i], color=colors[i], lw=1.0, ls="--", label="KANDy")
+        ax.set_ylabel(f"$\\theta_{i}$")
+        if i == 0:
+            ax.legend(loc="upper right", fontsize=7)
+    axes[-1].set_xlabel("time")
+    fig.suptitle("Adaptive Kuramoto: phase trajectories", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(outdir / "phase_trajectories.png", dpi=300, bbox_inches="tight")
+    fig.savefig(outdir / "phase_trajectories.pdf", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
-print("[FIGS]  Saved results/Adaptive-Kuramoto/")
+
+def plot_oscillator_signals(
+    outdir: Path,
+    t_roll: np.ndarray,
+    signal_true: np.ndarray,
+    signal_pred: np.ndarray,
+) -> None:
+    colors = plt.cm.tab10.colors
+    fig, axes = plt.subplots(N, 1, figsize=(8, 2 * N), sharex=True)
+    for i, ax in enumerate(axes):
+        ax.plot(t_roll, signal_true[:, i], color=colors[i], lw=1.2, label="True")
+        ax.plot(t_roll, signal_pred[:, i], color=colors[i], lw=1.0, ls="--", label="KANDy")
+        ax.set_ylabel(f"$\\cos(\\theta_{i})$")
+        ax.set_ylim(-1.1, 1.1)
+        if i == 0:
+            ax.legend(loc="upper right", fontsize=7)
+    axes[-1].set_xlabel("time")
+    fig.suptitle("Adaptive Kuramoto: oscillator signals", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(outdir / "oscillator_signals.png", dpi=300, bbox_inches="tight")
+    fig.savefig(outdir / "oscillator_signals.pdf", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_kappa_trajectories(
+    outdir: Path,
+    t_roll: np.ndarray,
+    kappa_true: np.ndarray,
+    kappa_pred: np.ndarray,
+) -> None:
+    colors = plt.cm.tab10.colors
+    n_show = min(4, N_OD)
+    fig, axes = plt.subplots(n_show, 1, figsize=(8, 2 * n_show), sharex=True)
+    if n_show == 1:
+        axes = [axes]
+    for k_idx, ax in enumerate(axes):
+        i, j = OD_PAIRS[k_idx]
+        ax.plot(t_roll, kappa_true[:, k_idx], color=colors[k_idx % 10], lw=1.2)
+        ax.plot(t_roll, kappa_pred[:, k_idx], color=colors[k_idx % 10], lw=1.0, ls="--")
+        ax.set_ylabel(f"$\\kappa_{{{i}{j}}}$")
+    axes[-1].set_xlabel("time")
+    fig.suptitle("Adaptive Kuramoto: coupling weights", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(outdir / "kappa_trajectories.png", dpi=300, bbox_inches="tight")
+    fig.savefig(outdir / "kappa_trajectories.pdf", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_order_parameter(
+    outdir: Path,
+    t_roll: np.ndarray,
+    r_true: np.ndarray,
+    r_pred: np.ndarray,
+    rmse_r: float,
+) -> None:
+    fig, ax = plt.subplots(figsize=(8, 3))
+    ax.plot(t_roll, r_true, color="steelblue", lw=1.4, label="True $r(t)$")
+    ax.plot(t_roll, r_pred, color="tomato", lw=1.0, ls="--", label="KANDy $r(t)$")
+    ax.set_xlabel("time")
+    ax.set_ylabel("$r(t)$")
+    ax.set_title(f"Kuramoto order parameter  (RMSE={rmse_r:.4f})")
+    ax.legend(fontsize=8)
+    ax.set_ylim(0, 1.05)
+    fig.tight_layout()
+    fig.savefig(outdir / "order_parameter.png", dpi=300, bbox_inches="tight")
+    fig.savefig(outdir / "order_parameter.pdf", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_coefficient_heatmap(
+    true_coef: np.ndarray,
+    learned_coef: np.ndarray,
+    feature_names: list[str],
+    out_names: list[str],
+    save: Path,
+) -> None:
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(12, max(3.5, 0.22 * len(out_names))),
+        sharey=True,
+    )
+    true_terms = true_coef[:, 1:]
+    learned_terms = learned_coef[:, 1:]
+    vmax = max(np.max(np.abs(true_terms)), np.max(np.abs(learned_terms)))
+    for ax, mat, title in [
+        (axes[0], true_terms, "True"),
+        (axes[1], learned_terms, "KANDy linear readout"),
+    ]:
+        im = ax.imshow(mat, cmap="coolwarm", vmin=-vmax, vmax=vmax, aspect="auto")
+        ax.set_title(title)
+        ax.set_xticks(range(len(feature_names)))
+        ax.set_xticklabels(feature_names, rotation=60, ha="right", fontsize=6)
+        ax.set_xlabel("lift feature")
+    axes[0].set_yticks(range(len(out_names)))
+    axes[0].set_yticklabels(out_names, fontsize=7)
+    fig.colorbar(im, ax=axes, shrink=0.85, label="coefficient")
+    fig.savefig(save.with_suffix(".png"), dpi=300, bbox_inches="tight")
+    fig.savefig(save.with_suffix(".pdf"), dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_training_loss(outdir: Path, phase_model: KANDy, kappa_model: KANDy) -> None:
+    if hasattr(phase_model, "train_results_") and phase_model.train_results_:
+        fig, _ax = plot_loss_curves(
+            phase_model.train_results_,
+            save=str(outdir / "loss_phase"),
+        )
+        plt.close(fig)
+
+    if hasattr(kappa_model, "train_results_") and kappa_model.train_results_:
+        fig, _ax = plot_loss_curves(
+            kappa_model.train_results_,
+            save=str(outdir / "loss_kappa"),
+        )
+        plt.close(fig)
+
 
 # ---------------------------------------------------------------------------
-# 8. Symbolic extraction (after rollout — splines replaced with sym fns here)
+# 8. Figures
 # ---------------------------------------------------------------------------
-print("\n" + "=" * 60)
-print("SYMBOLIC EQUATION DISCOVERY")
-print("=" * 60)
-print(f"\nTrue dθ_i/dt = ω_i + Σ_j κ_ij · sin(θ_i - θ_j - {ALPHA:.3f})")
-print(f"     (α={ALPHA:.4f} = -π/4,  inputs: θ_i - θ_j, κ_ij)\n")
-print(f"True dκ_ij/dt = -ε·[κ_ij + sin(θ_i - θ_j - {BETA:.3f})]")
-print(f"     (β={BETA:.4f} = -π/2,  ε={EPS})\n")
+use_pub_style()
+t_roll = np.arange(T_EVAL) * DT_SIM
+plot_phase_trajectories(RESULT_DIR, t_roll, true_theta, pred_theta)
+plot_oscillator_signals(RESULT_DIR, t_roll, signal_true, signal_pred)
+plot_kappa_trajectories(RESULT_DIR, t_roll, true_kappa, pred_kappa)
+plot_order_parameter(RESULT_DIR, t_roll, r_true, r_pred, rmse_r)
+plot_coefficient_heatmap(
+    A_phase_true,
+    A_phase,
+    PHASE_FEATURE_NAMES,
+    [f"dtheta{i}/dt" for i in range(N)],
+    RESULT_DIR / "phase_linear_coefficients",
+)
+plot_coefficient_heatmap(
+    A_kappa_true,
+    A_kappa,
+    KAPPA_FEATURE_NAMES,
+    [f"dk{i}{j}/dt" for (i, j) in OD_PAIRS],
+    RESULT_DIR / "kappa_linear_coefficients",
+)
+plot_training_loss(RESULT_DIR, model_phase, model_kappa)
 
-for sym_name, mdl, out_labels in [
-    ("Phase dynamics  dθ/dt",
-     model_theta,
-     [f"dθ{i}/dt" for i in range(N)]),
-    ("Coupling dynamics  dκ/dt",
-     model_kappa,
-     [f"dκ{i}{j}/dt" for (i, j) in OD_PAIRS]),
-]:
-    print(f"--- {sym_name} ---")
-    try:
-        formulas = mdl.get_formula(var_names=FEATURE_NAMES, round_places=2)
-        for lab, f in zip(out_labels, formulas):
-            print(f"  {lab} = {f}")
-    except Exception as exc:
-        print(f"  Symbolic extraction failed: {exc}")
-    print()
+print(f"[FIGS]  Saved {RESULT_DIR}/")

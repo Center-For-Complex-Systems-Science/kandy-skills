@@ -45,12 +45,19 @@ Expected KAN structure (perfect sparsity):
 """
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
+if str(EXAMPLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_ROOT))
+
+from _utils import ensure_outdir, print_check, save_metrics
 from kandy import KANDy, CustomLift
 from kandy.plotting import (
     get_all_edge_activations,
@@ -223,6 +230,42 @@ rmse_k1 = np.sqrt(np.mean((P_k1_pred - P_k1_true) ** 2))
 rmse_k2 = np.sqrt(np.mean((P_k2_pred - P_k2_true) ** 2))
 print(f"\n[EVAL]  Trefoil K1 RMSE: {rmse_k1:.6f}")
 print(f"[EVAL]  Trefoil K2 RMSE: {rmse_k2:.6f}")
+
+# ---------------------------------------------------------------------------
+# 5b. Verification
+#
+#     Both knots are GENERALISATION targets: the model was trained on generic
+#     S^3 samples, never on these curves.  Landing on S^2 is checked separately
+#     from pointwise RMSE, since the Hopf image must be a unit vector and
+#     nothing in training imposed that.
+# ---------------------------------------------------------------------------
+norm_dev = float(max(
+    np.abs(np.linalg.norm(P_k1_pred, axis=1) - 1.0).max(),
+    np.abs(np.linalg.norm(P_k2_pred, axis=1) - 1.0).max(),
+))
+print(f"[EVAL]  max ||p|| - 1 over both knots: {norm_dev:.6f} "
+      f"(never imposed during training)")
+
+THRESHOLDS = {
+    "knot_rmse_max": 0.02,
+    "sphere_norm_dev_max": 0.05,
+}
+passed = print_check(
+    max(float(rmse_k1), float(rmse_k2)) <= THRESHOLDS["knot_rmse_max"]
+    and norm_dev <= THRESHOLDS["sphere_norm_dev_max"],
+    "Trefoil knots map onto S^2 under the learned Hopf map",
+)
+RESULT_DIR = ensure_outdir(RESULTS_DIR)
+save_metrics(RESULT_DIR / "metrics.json", {
+    "task": "TrefoilKnot",
+    "category": "geometry",
+    "seed": SEED,
+    "rmse_knot_k1": float(rmse_k1),
+    "rmse_knot_k2": float(rmse_k2),
+    "sphere_norm_deviation": norm_dev,
+    "thresholds": THRESHOLDS,
+    "passed": passed,
+})
 
 # ---------------------------------------------------------------------------
 # 6. Symbolic extraction
